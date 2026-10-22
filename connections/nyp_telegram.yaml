@@ -1,0 +1,9 @@
+# Telegram approval bot. Entries: bot_token, allowed_chat_id (the only chat that may approve).
+# Values are set with scripts/setup_connections.sh, never stored here.
+spec_version: v1
+kind: connection
+app_id: nyp_telegram
+environments:
+  draft:
+    security_scheme: key_value_creds
+    type: team
