@@ -32,10 +32,19 @@ for app in nyp_google_read nyp_google_act nyp_telegram; do
   orchestrate connections import -f "connections/$app.yaml"
 done
 
+declare -A GOOGLE_SCOPES=(
+  [nyp_google_read]="https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.readonly"
+  [nyp_google_act]="https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.events"
+)
 if filled GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET; then
   for app in nyp_google_read nyp_google_act; do
+    # access_type=offline + prompt=consent so Google returns a refresh token.
     orchestrate connections set-credentials -a "$app" --env draft \
-      --client-id "$GOOGLE_CLIENT_ID" --client-secret "$GOOGLE_CLIENT_SECRET"
+      --client-id "$GOOGLE_CLIENT_ID" --client-secret "$GOOGLE_CLIENT_SECRET" \
+      --auth-url "https://accounts.google.com/o/oauth2/v2/auth" \
+      --token-url "https://oauth2.googleapis.com/token" \
+      --scope "${GOOGLE_SCOPES[$app]}" \
+      --auth-entries "access_type=offline" --auth-entries "prompt=consent"
   done
   echo "Google connections set. Sign in once for each (read, then act) when Orchestrate asks."
 else

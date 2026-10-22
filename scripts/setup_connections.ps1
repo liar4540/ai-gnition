@@ -31,9 +31,20 @@ foreach ($app in @("nyp_google_read", "nyp_google_act", "nyp_telegram")) {
     & $orch connections import -f (Join-Path $Root "connections\$app.yaml")
 }
 
+$GoogleScopes = @{
+    "nyp_google_read" = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.readonly"
+    "nyp_google_act"  = "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.events"
+}
 if (Test-Filled @("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")) {
     foreach ($app in @("nyp_google_read", "nyp_google_act")) {
-        & $orch connections set-credentials -a $app --env draft --client-id $vars["GOOGLE_CLIENT_ID"] --client-secret $vars["GOOGLE_CLIENT_SECRET"]
+        # access_type=offline + prompt=consent so Google returns a refresh token.
+        & $orch connections set-credentials -a $app --env draft `
+            --client-id $vars["GOOGLE_CLIENT_ID"] --client-secret $vars["GOOGLE_CLIENT_SECRET"] `
+            --auth-url "https://accounts.google.com/o/oauth2/v2/auth" `
+            --token-url "https://oauth2.googleapis.com/token" `
+            --scope $GoogleScopes[$app] `
+            --auth-entries "access_type=offline" --auth-entries "prompt=consent"
+        if ($LASTEXITCODE -ne 0) { throw "Setting Google credentials failed for $app." }
     }
     Write-Host "Google connections set. Sign in once for each (read, then act) when Orchestrate asks."
 } else {
