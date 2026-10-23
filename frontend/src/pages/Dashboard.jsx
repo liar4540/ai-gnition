@@ -10,6 +10,7 @@ import EventAvailableIcon from "@mui/icons-material/EventAvailable";
 import VerifiedUserIcon from "@mui/icons-material/VerifiedUser";
 import { useAgentData, useMessageMeta } from "../api/AgentData.jsx";
 import StatCard from "../components/StatCard.jsx";
+import HowToTry from "../components/HowToTry.jsx";
 import { DecisionChip, EvidenceBadge, RiskChip } from "../components/Badges.jsx";
 import { useEmailParam } from "../components/EmailDetailDrawer.jsx";
 import { EmptyState, ErrorBanner, LoadingRows } from "../components/States.jsx";
@@ -85,6 +86,7 @@ export default function Dashboard() {
       <Box>
         <Typography variant="h1" sx={{ mb: 2 }}>Dashboard</Typography>
         <ErrorBanner />
+        <HowToTry />
         {loading && <LoadingRows rows={6} />}
       </Box>
     );
@@ -98,6 +100,7 @@ export default function Dashboard() {
         <Typography variant="h1" sx={{ flexGrow: 1 }}>Dashboard</Typography>
       </Stack>
       <ErrorBanner />
+      <HowToTry />
 
       {c.analysed === 0 ? (
         <Card><EmptyState title="No emails analysed yet" text="Scan the inbox to classify mail, flag threats and create tasks." /></Card>

@@ -11,7 +11,9 @@
 //   GET  /api/messages?ids  sender / subject / received date fetched live from Gmail (never stored)
 import express from "express";
 import { randomUUID } from "node:crypto";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
+import path from "node:path";
 
 const PORT = Number(process.env.API_PORT || 8787);
 const WXO_URL = (process.env.WXO_SERVER_URL || "").replace(/\/+$/, "");
@@ -360,6 +362,11 @@ const handle = (fn) => async (req, res) => {
 
 app.get("/api/health", (_req, res) => res.json({ ok: true, missing: configProblems() }));
 
+app.get("/api/config", (_req, res) => res.json({
+  demo_email: process.env.DEMO_GMAIL || "",
+  video_link: process.env.DEMO_VIDEO_LINK || "",
+}));
+
 app.get("/api/state", handle(async (req, res) => {
   res.json(await getState(req.query.refresh === "1"));
 }));
@@ -391,6 +398,10 @@ app.post("/api/chat", handle(async (req, res) => {
   const threadId = req.body?.thread_id ? String(req.body.thread_id) : undefined;
   if (!message) throw new HttpError(400, "Message is empty.");
   if (message.length > 2000) throw new HttpError(400, "Message is too long (max 2000 characters).");
+  // The web chat may be shared with visitors: never let it wipe the store (use Orchestrate chat).
+  if (/\breset\b|nyp_store_reset|\b(delete|wipe|erase|clear)\b.*\b(data|store|tasks|analys[ei]s)\b/i.test(message)) {
+    throw new HttpError(403, "Resetting or deleting data is turned off in the web chat.");
+  }
   const started = await startRun(message, threadId);
   const run = await waitForRun(started.run_id, 3 * 60_000);
   stateCache = { at: 0, data: null }; // chat can change data (e.g. "check approvals")
@@ -406,9 +417,21 @@ app.get("/api/messages", handle(async (req, res) => {
   res.json({ messages: results });
 }));
 
+// Serve the built dashboard (npm run build -> ../dist) from the same port, for hosting.
+const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "dist");
+if (existsSync(DIST)) {
+  app.use(express.static(DIST));
+  app.use((req, res, next) => {
+    if (req.method !== "GET" || req.path.startsWith("/api")) return next();
+    res.sendFile(path.join(DIST, "index.html"));
+  });
+}
+
+const HOST = process.env.HOST || "localhost";
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   setInterval(syncApprovals, SYNC_MS);
-  app.listen(PORT, "localhost", () => {
+  app.listen(PORT, HOST, () => {
     const problems = configProblems();
     console.log(`API server on http://localhost:${PORT}` + (problems.length ? ` — missing: ${problems.join("; ")}` : " — ready"));
   });
