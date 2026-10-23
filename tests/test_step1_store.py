@@ -74,6 +74,20 @@ class StoreTest(TempDBTestCase):
         self.assertEqual(row["evidence"], ["LOOKALIKE_DOMAIN"])
         self.assertEqual(len(store.list_analyses(quarantined=True)), 1)
 
+    def test_reset_needs_confirmation_and_clears_everything(self):
+        store.set_sync_state("old-mailbox-history")
+        t = store.upsert_task(thread_id="th1", title="Old task")
+        store.create_approval(t["task_id"], "send_reply", "abc")
+        self.assertFalse(store.nyp_store_reset.fn("yes")["reset"])
+        self.assertEqual(store.get_sync_state()["history_id"], "old-mailbox-history")
+        r = store.nyp_store_reset.fn("RESET")
+        self.assertTrue(r["reset"])
+        self.assertIsNone(store.get_sync_state()["history_id"])
+        self.assertEqual(r["counts"]["tasks"], 0)
+        self.assertEqual(r["counts"]["approvals"], 0)
+        self.assertEqual(r["counts"]["activity_log"], 1)        # only the reset entry itself
+        self.assertEqual(store.upsert_task(thread_id="th2", title="New")["task_id"], 1)
+
     def test_data_persists_across_processes(self):
         """Self-test from the plan: write in one process, read in another."""
         env = dict(os.environ)

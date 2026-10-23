@@ -23,36 +23,47 @@ if (-not (Test-Filled @("WXO_SERVER_URL", "WXO_API_KEY"))) {
     throw "WXO_SERVER_URL / WXO_API_KEY not filled in .env; cannot reach Orchestrate."
 }
 $orch = Join-Path $Root "venv\Scripts\orchestrate.exe"
+
+# The shared tenant sometimes answers 403 "UserID does not have roles" for a moment; retry those.
+function Invoke-Orch {
+    # PowerShell 5.1 turns a native command's stderr into terminating errors under "Stop";
+    # the CLI writes warnings and errors there, so read it as plain text instead.
+    $ErrorActionPreference = "Continue"
+    for ($try = 1; $try -le 4; $try++) {
+        $out = & $orch @args 2>&1 | ForEach-Object { "$_" }
+        $out | Write-Host
+        if ($LASTEXITCODE -eq 0 -and -not ($out -match "status_code=403|does not have roles")) { return }
+        if ($try -lt 4) { Write-Host "  ...Orchestrate refused (try $try of 4), retrying in 10s"; Start-Sleep -Seconds 10 }
+    }
+    throw "Orchestrate kept refusing: orchestrate $($args[0..1] -join ' ') (see the 403 / 'does not have roles' message above)."
+}
 $existing = & $orch env list 2>&1 | Out-String
 if ($existing -notmatch "nyp_env") { & $orch env add -n nyp_env -u $vars["WXO_SERVER_URL"] }
 & $orch env activate nyp_env --api-key $vars["WXO_API_KEY"]
 
 foreach ($app in @("nyp_google_read", "nyp_google_act", "nyp_telegram")) {
-    & $orch connections import -f (Join-Path $Root "connections\$app.yaml")
+    Invoke-Orch connections import -f (Join-Path $Root "connections\$app.yaml")
 }
 
-$GoogleScopes = @{
-    "nyp_google_read" = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.readonly"
-    "nyp_google_act"  = "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.events"
-}
-if (Test-Filled @("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")) {
-    foreach ($app in @("nyp_google_read", "nyp_google_act")) {
-        # access_type=offline + prompt=consent so Google returns a refresh token.
-        & $orch connections set-credentials -a $app --env draft `
-            --client-id $vars["GOOGLE_CLIENT_ID"] --client-secret $vars["GOOGLE_CLIENT_SECRET"] `
-            --auth-url "https://accounts.google.com/o/oauth2/v2/auth" `
-            --token-url "https://oauth2.googleapis.com/token" `
-            --scope $GoogleScopes[$app] `
-            --auth-entries "access_type=offline" --auth-entries "prompt=consent"
-        if ($LASTEXITCODE -ne 0) { throw "Setting Google credentials failed for $app." }
+# Google: key-value connections holding a refresh token each (get them with
+# scripts\get_google_refresh_token.py read / act). The tools refresh access tokens themselves.
+$GoogleTokens = @{ "nyp_google_read" = "GOOGLE_READ_REFRESH_TOKEN"; "nyp_google_act" = "GOOGLE_ACT_REFRESH_TOKEN" }
+foreach ($app in @("nyp_google_read", "nyp_google_act")) {
+    $tokenVar = $GoogleTokens[$app]
+    if (-not (Test-Filled @("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", $tokenVar))) {
+        Write-Host "Skipped $app : GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / $tokenVar not filled."
+        continue
     }
-    Write-Host "Google connections set. Sign in once for each (read, then act) when Orchestrate asks."
-} else {
-    Write-Host "Skipped Google: GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not filled."
+    Invoke-Orch connections configure -a $app --env draft --type team --kind key_value
+    Invoke-Orch connections set-credentials -a $app --env draft `
+        -e "client_id=$($vars['GOOGLE_CLIENT_ID'])" -e "client_secret=$($vars['GOOGLE_CLIENT_SECRET'])" `
+        -e "refresh_token=$($vars[$tokenVar])"
+    Write-Host "$app set."
 }
 
 if (Test-Filled @("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")) {
-    & $orch connections set-credentials -a nyp_telegram --env draft --entries "bot_token=$($vars['TELEGRAM_BOT_TOKEN']),allowed_chat_id=$($vars['TELEGRAM_CHAT_ID'])"
+    Invoke-Orch connections set-credentials -a nyp_telegram --env draft `
+        -e "bot_token=$($vars['TELEGRAM_BOT_TOKEN'])" -e "allowed_chat_id=$($vars['TELEGRAM_CHAT_ID'])"
     Write-Host "Telegram connection set."
 } else {
     Write-Host "Skipped Telegram: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not filled. Approvals will say 'telegram not configured'."

@@ -18,9 +18,9 @@ from typing import Optional
 
 from ibm_watsonx_orchestrate.agent_builder.connections import ConnectionType, ExpectedCredentials
 from ibm_watsonx_orchestrate.agent_builder.tools import tool, ToolPermission
-from ibm_watsonx_orchestrate.run import connections
 
 import nyp_store as store
+from nyp_google_auth import access_token
 
 APP_ID = "nyp_google_act"
 GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
@@ -29,7 +29,7 @@ EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
 
 def _google_call(method: str, url: str, body: dict) -> dict:
     """Send one write request to Google with the action token and return the JSON reply."""
-    token = connections.oauth2_auth_code(APP_ID).access_token
+    token = access_token(APP_ID)
     req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method=method,
                                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
     try:
@@ -119,7 +119,7 @@ def execute(approval_id: str, action: str) -> dict:
 
 
 @tool(permission=ToolPermission.READ_WRITE,
-      expected_credentials=[ExpectedCredentials(app_id=APP_ID, type=ConnectionType.OAUTH2_AUTH_CODE)])
+      expected_credentials=[ExpectedCredentials(app_id=APP_ID, type=ConnectionType.KEY_VALUE)])
 def nyp_execute(approval_id: str, action: str) -> dict:
     """
     Carry out ONE action the user approved on Telegram. Only use an approval_id that nyp_check_approvals just reported as approved.

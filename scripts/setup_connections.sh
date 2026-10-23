@@ -32,28 +32,24 @@ for app in nyp_google_read nyp_google_act nyp_telegram; do
   orchestrate connections import -f "connections/$app.yaml"
 done
 
-declare -A GOOGLE_SCOPES=(
-  [nyp_google_read]="https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.readonly"
-  [nyp_google_act]="https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.events"
-)
-if filled GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET; then
-  for app in nyp_google_read nyp_google_act; do
-    # access_type=offline + prompt=consent so Google returns a refresh token.
-    orchestrate connections set-credentials -a "$app" --env draft \
-      --client-id "$GOOGLE_CLIENT_ID" --client-secret "$GOOGLE_CLIENT_SECRET" \
-      --auth-url "https://accounts.google.com/o/oauth2/v2/auth" \
-      --token-url "https://oauth2.googleapis.com/token" \
-      --scope "${GOOGLE_SCOPES[$app]}" \
-      --auth-entries "access_type=offline" --auth-entries "prompt=consent"
-  done
-  echo "Google connections set. Sign in once for each (read, then act) when Orchestrate asks."
-else
-  echo "Skipped Google: GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not filled."
-fi
+# Google: key-value connections holding a refresh token each (get them with
+# scripts/get_google_refresh_token.py read / act). The tools refresh access tokens themselves.
+declare -A GOOGLE_TOKENS=([nyp_google_read]=GOOGLE_READ_REFRESH_TOKEN [nyp_google_act]=GOOGLE_ACT_REFRESH_TOKEN)
+for app in nyp_google_read nyp_google_act; do
+  token_var="${GOOGLE_TOKENS[$app]}"
+  if ! filled GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET "$token_var"; then
+    echo "Skipped $app: GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / $token_var not filled."
+    continue
+  fi
+  orchestrate connections configure -a "$app" --env draft --type team --kind key_value
+  orchestrate connections set-credentials -a "$app" --env draft \
+    -e "client_id=$GOOGLE_CLIENT_ID" -e "client_secret=$GOOGLE_CLIENT_SECRET" -e "refresh_token=${!token_var}"
+  echo "$app set."
+done
 
 if filled TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID; then
   orchestrate connections set-credentials -a nyp_telegram --env draft \
-    --entries "bot_token=$TELEGRAM_BOT_TOKEN,allowed_chat_id=$TELEGRAM_CHAT_ID"
+    -e "bot_token=$TELEGRAM_BOT_TOKEN" -e "allowed_chat_id=$TELEGRAM_CHAT_ID"
   echo "Telegram connection set."
 else
   echo "Skipped Telegram: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not filled. Approvals will say 'telegram not configured'."

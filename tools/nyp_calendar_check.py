@@ -12,9 +12,9 @@ from typing import Optional
 
 from ibm_watsonx_orchestrate.agent_builder.connections import ConnectionType, ExpectedCredentials
 from ibm_watsonx_orchestrate.agent_builder.tools import tool, ToolPermission
-from ibm_watsonx_orchestrate.run import connections
 
 import nyp_store as store
+from nyp_google_auth import access_token
 
 APP_ID = "nyp_google_read"
 EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
@@ -22,7 +22,7 @@ EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
 
 def _calendar_call(params: dict) -> dict:
     """GET the primary calendar's events with the read-only token."""
-    token = connections.oauth2_auth_code(APP_ID).access_token
+    token = access_token(APP_ID)
     req = urllib.request.Request(EVENTS_URL + "?" + urllib.parse.urlencode(params),
                                  headers={"Authorization": f"Bearer {token}"})
     try:
@@ -45,7 +45,7 @@ def conflicts(start: str, end: str) -> dict:
 
 
 @tool(permission=ToolPermission.READ_WRITE,   # writes only our own store (clash evidence), never Calendar
-      expected_credentials=[ExpectedCredentials(app_id=APP_ID, type=ConnectionType.OAUTH2_AUTH_CODE)])
+      expected_credentials=[ExpectedCredentials(app_id=APP_ID, type=ConnectionType.KEY_VALUE)])
 def nyp_calendar_conflicts(start: str, end: str, message_id: Optional[str] = None) -> dict:
     """
     List calendar events overlapping a time window and say whether it clashes.

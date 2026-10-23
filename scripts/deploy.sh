@@ -28,6 +28,7 @@ orchestrate env activate nyp_env --api-key "$WXO_API_KEY"
 # nyp_google_act (send + calendar write) goes to nyp_executor.py and nowhere else.
 declare -A APP_IDS=(
   [nyp_read_mail.py]="nyp_google_read"
+  [nyp_diagnose.py]="nyp_google_read"
   [nyp_calendar_check.py]="nyp_google_read"
   [nyp_chat_views.py]="nyp_google_read"
   [nyp_request_approval.py]="nyp_telegram nyp_google_read"
@@ -41,6 +42,7 @@ REQS=()
 
 for f in tools/nyp_*.py; do
   name="$(basename "$f")"
+  grep -q '^@tool' "$f" || continue   # helper module, no tools
   args=(-k python -f "$f" -p tools "${REQS[@]}")
   for app in ${APP_IDS[$name]:-}; do
     args+=(-a "$app")

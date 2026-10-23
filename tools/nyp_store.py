@@ -334,6 +334,30 @@ def nyp_store_init() -> dict:
     return {"db_path": db_path(), "counts": {t: count(t) for t in TABLES}}
 
 
+@tool(permission=ToolPermission.ADMIN)
+def nyp_store_reset(confirm: str) -> dict:
+    """
+    Delete ALL stored data (sync bookmark, analyses, tasks, drafts, approvals, activity log). Use only when the user explicitly asks to reset, e.g. after switching the test Gmail account.
+
+    Args:
+        confirm (str): Must be exactly RESET, typed by the user.
+    Returns:
+        dict: {"reset": true, "counts": {...}} or {"reset": false, "error": str}.
+    """
+    if confirm != "RESET":
+        return {"reset": False, "error": "Not reset. The user must confirm with the word RESET."}
+    conn = _connect()
+    try:
+        for table in TABLES:
+            conn.execute(f"DELETE FROM {table}")
+        conn.execute("DELETE FROM sqlite_sequence")
+        conn.commit()
+    finally:
+        conn.close()
+    log("nyp_store_reset", "reset", "all tables cleared")
+    return {"reset": True, "counts": {t: count(t) for t in TABLES}}
+
+
 @tool(permission=ToolPermission.READ_ONLY)
 def nyp_get_sync_state() -> dict:
     """

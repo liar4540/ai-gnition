@@ -1,16 +1,11 @@
 # Send + calendar-write access. Attached ONLY to tools/nyp_executor.py (hard rule 1).
-# Client id/secret are set with scripts/setup_connections.sh, never stored here.
+# Key-value entries: client_id, client_secret, refresh_token (gmail.send + calendar.events).
+# Values are set with scripts/setup_connections.ps1 from .env, never stored here.
+# Get the refresh token once with: venv\Scripts\python scripts\get_google_refresh_token.py act
 spec_version: v1
 kind: connection
 app_id: nyp_google_act
 environments:
   draft:
-    security_scheme: oauth2
-    auth_type: oauth2_auth_code
+    security_scheme: key_value_creds
     type: team
-    server_url: https://www.googleapis.com
-    auth_url: https://accounts.google.com/o/oauth2/v2/auth
-    token_url: https://oauth2.googleapis.com/token
-    scope:
-      - https://www.googleapis.com/auth/gmail.send
-      - https://www.googleapis.com/auth/calendar.events

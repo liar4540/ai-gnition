@@ -159,7 +159,7 @@ def nyp_suspicious_list() -> str:
 
 
 @tool(permission=ToolPermission.READ_ONLY,
-      expected_credentials=[ExpectedCredentials(app_id=GOOGLE_READ_APP_ID, type=ConnectionType.OAUTH2_AUTH_CODE)])
+      expected_credentials=[ExpectedCredentials(app_id=GOOGLE_READ_APP_ID, type=ConnectionType.KEY_VALUE)])
 def nyp_inbox() -> str:
     """
     Show analysed emails with sender and subject fetched live from Gmail (nothing is saved).

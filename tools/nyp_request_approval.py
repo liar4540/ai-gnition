@@ -30,7 +30,7 @@ ACTIONS = ("send_reply", "calendar_create", "calendar_move")
 TONES = {"formal": "More formal", "firm": "Firmer", "short": "Shorten"}
 NOT_CONFIGURED = "telegram not configured"
 CREDENTIALS = [ExpectedCredentials(app_id=TELEGRAM_APP_ID, type=ConnectionType.KEY_VALUE),
-               ExpectedCredentials(app_id=GOOGLE_READ_APP_ID, type=ConnectionType.OAUTH2_AUTH_CODE)]
+               ExpectedCredentials(app_id=GOOGLE_READ_APP_ID, type=ConnectionType.KEY_VALUE)]
 
 
 class TelegramNotConfigured(Exception):
