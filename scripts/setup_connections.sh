@@ -41,16 +41,21 @@ for app in nyp_google_read nyp_google_act; do
     echo "Skipped $app: GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / $token_var not filled."
     continue
   fi
-  orchestrate connections configure -a "$app" --env draft --type team --kind key_value
-  orchestrate connections set-credentials -a "$app" --env draft \
-    -e "client_id=$GOOGLE_CLIENT_ID" -e "client_secret=$GOOGLE_CLIENT_SECRET" -e "refresh_token=${!token_var}"
-  echo "$app set."
+  for e in draft live; do   # live = deployed agent and embedded web chat
+    orchestrate connections configure -a "$app" --env "$e" --type team --kind key_value
+    orchestrate connections set-credentials -a "$app" --env "$e" \
+      -e "client_id=$GOOGLE_CLIENT_ID" -e "client_secret=$GOOGLE_CLIENT_SECRET" -e "refresh_token=${!token_var}"
+  done
+  echo "$app set (draft and live)."
 done
 
 if filled TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID; then
-  orchestrate connections set-credentials -a nyp_telegram --env draft \
-    -e "bot_token=$TELEGRAM_BOT_TOKEN" -e "allowed_chat_id=$TELEGRAM_CHAT_ID"
-  echo "Telegram connection set."
+  for e in draft live; do
+    orchestrate connections configure -a nyp_telegram --env "$e" --type team --kind key_value
+    orchestrate connections set-credentials -a nyp_telegram --env "$e" \
+      -e "bot_token=$TELEGRAM_BOT_TOKEN" -e "allowed_chat_id=$TELEGRAM_CHAT_ID"
+  done
+  echo "Telegram connection set (draft and live)."
 else
   echo "Skipped Telegram: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not filled. Approvals will say 'telegram not configured'."
 fi

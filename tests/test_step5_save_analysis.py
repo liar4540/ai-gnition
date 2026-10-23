@@ -128,6 +128,23 @@ class SaveAnalysisTest(TempDBTestCase):
         self.assertTrue(r["ok"], r)
         self.assertEqual(r["band"], "high")   # 80 + 10 = 90
 
+    def test_verified_newsletter_wrongly_labelled_suspicious_is_saved_as_routine(self):
+        nyp_safety_check.fn("n1", "deals@shop.com", "", "Sale", "Act now!", ["shop.com"], "dkim=pass", [], True)
+        r = plan("n1", thread_id="tn1", category="suspicious", action="none", task_title=None, draft_reply=None,
+                 deadline=None)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["category"], "routine")
+        self.assertFalse(r["quarantined"])
+        self.assertIn("verified newsletter", " ".join(r["reasons"]))
+
+    def test_newsletter_with_a_warning_stays_quarantined_when_labelled_suspicious(self):
+        nyp_safety_check.fn("n2", "deals@shop.com", "", "Notice", "Please verify your account.", ["shop.com"],
+                            "dkim=pass", [], True)
+        r = plan("n2", thread_id="tn2", category="suspicious", action="none", task_title=None, draft_reply=None,
+                 deadline=None)
+        self.assertEqual(r["category"], "suspicious")
+        self.assertTrue(r["quarantined"])
+
     def test_band_edges_and_all_day_event(self):
         self.assertEqual([band_for(x) for x in (90, 89, 70, 69)], ["high", "medium", "medium", "low"])
         ev = calendar_payload("Pay bill", "2026-11-05")

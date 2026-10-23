@@ -30,7 +30,7 @@ def access_token(app_id: str) -> str:
         return cached[0]
     try:
         kv = connections.key_value(app_id) or {}
-    except Exception:
+    except (Exception, SystemExit):   # the ADK calls sys.exit() when a connection is missing
         raise GoogleNotConfigured(f"connection {app_id} is not set up") from None
     fields = {k: str(kv.get(k, "")).strip() for k in ("client_id", "client_secret", "refresh_token")}
     missing = [k for k, v in fields.items() if not v or v.startswith("<")]

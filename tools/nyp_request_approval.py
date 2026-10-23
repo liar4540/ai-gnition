@@ -14,7 +14,7 @@ Every Telegram HTTP call goes through _telegram_call() so tests can replace it.
 import json
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from ibm_watsonx_orchestrate.agent_builder.connections import ConnectionType, ExpectedCredentials
@@ -24,6 +24,8 @@ from ibm_watsonx_orchestrate.run import connections
 import nyp_store as store
 from nyp_read_mail import APP_ID as GOOGLE_READ_APP_ID, get_reply_headers
 from nyp_safety_check import label
+from nyp_save_analysis import create_reminder
+LOCAL_TZ = store.LOCAL_TZ
 
 TELEGRAM_APP_ID = "nyp_telegram"
 ACTIONS = ("send_reply", "calendar_create", "calendar_move")
@@ -40,7 +42,7 @@ class TelegramNotConfigured(Exception):
 def _telegram_config() -> dict:
     try:
         kv = connections.key_value(TELEGRAM_APP_ID) or {}
-    except Exception:
+    except (Exception, SystemExit):   # the ADK calls sys.exit() when a connection is missing
         raise TelegramNotConfigured() from None
     token, chat_id = str(kv.get("bot_token", "")).strip(), str(kv.get("allowed_chat_id", "")).strip()
     if not token or not chat_id or token.startswith("<") or chat_id.startswith("<"):
@@ -73,26 +75,46 @@ def _latest_analysis(task: dict) -> dict:
     return (store.get_analysis(ids[-1]) if ids else None) or {"risk": "unknown", "evidence": []}
 
 
+def _local_time(iso: str) -> str:
+    """'2026-10-25T09:00:00+08:00' -> 'Sun 25 Oct 2026, 9:00 AM' in the user's time zone."""
+    dt = datetime.fromisoformat(iso)
+    dt = dt.astimezone(LOCAL_TZ) if dt.tzinfo else dt
+    return dt.strftime("%a %d %b %Y, %I:%M %p").replace(", 0", ", ")
+
+
+def _when(payload: dict) -> str:
+    if payload["all_day"]:
+        first = date.fromisoformat(payload["start"])
+        last = date.fromisoformat(payload["end"]) - timedelta(days=1)  # end is exclusive
+        text = first.strftime("%a %d %b %Y")
+        return (text if last == first else f"{text} to {last.strftime('%a %d %b %Y')}") + " (all day)"
+    start, end = _local_time(payload["start"]), _local_time(payload["end"])
+    same_day = start.split(",")[0] == end.split(",")[0]
+    return f"{start} to {end.split(', ')[1] if same_day else end} ({LOCAL_TZ.tzname(None)})"
+
+
 def _card(task: dict, action: str, payload: dict, approval: dict) -> str:
     """The Telegram message: exact content, risk, confidence, evidence, and what approve does."""
+    from_user = not (task.get("source_message_ids") or "").strip()
     analysis = _latest_analysis(task)
     lines = [f"Approval needed: {task['title']}", ""]
     if action == "send_reply":
         lines += [f"Reply to: {payload['to']}", f"Subject: {payload['subject']}", "", payload["body"], ""]
         effect = "Gmail sends exactly this reply in the original thread."
     else:
-        when = payload["start"] if payload["all_day"] else f"{payload['start']} to {payload['end']}"
         reminders = ", ".join(f"{r['minutes'] // 60}h before" for r in payload["reminders"])
-        lines += [f"Event: {payload['title']}", f"When: {when}{' (all day)' if payload['all_day'] else ''}",
-                  f"Reminders: {reminders}", ""]
+        lines += [f"Event: {payload['title']}", f"When: {_when(payload)}", f"Reminders: {reminders}", ""]
         effect = ("Google Calendar moves the existing event to this time." if action == "calendar_move"
                   else "Google Calendar adds this event with these reminders.")
-    lines.append(f"Risk: {analysis['risk']}   Confidence: {task.get('confidence')}")
-    for code in analysis["evidence"]:
-        lines.append(f"  - {label(code)}")
+    if from_user:
+        lines.append("Source: you asked for this in chat (no email involved).")
+    else:
+        lines.append(f"Risk: {analysis['risk']}   Confidence: {task.get('confidence')}")
+        for code in analysis["evidence"]:
+            lines.append(f"  - {label(code)}")
     if task.get("delta"):
         lines.append(f"What changed: {task['delta']}")
-    lines += [f"If you approve: {effect}", f"Expires: {approval['expires_at'][:16].replace('T', ' ')} UTC"]
+    lines += [f"If you approve: {effect}", f"Expires: {_local_time(approval['expires_at'])} ({LOCAL_TZ.tzname(None)})"]
     return "\n".join(lines)
 
 
@@ -104,17 +126,79 @@ def _buttons(action: str, approval_id: str) -> dict:
     return {"inline_keyboard": rows}
 
 
+def close_card(chat_id: str, message_id, note: str, card_text: Optional[str] = None,
+               stamp: Optional[str] = None) -> None:
+    """Remove the buttons from a Telegram card and post a short reply under it. With card_text and
+    stamp, the card itself is rewritten to end with the decision (e.g. "REJECTED"), which also drops
+    the buttons. Best effort: a Telegram hiccup must never undo or block a decision already recorded."""
+    if not message_id:
+        return
+    try:
+        if card_text and stamp:
+            _telegram_call("editMessageText", {"chat_id": chat_id, "message_id": int(message_id),
+                                               "text": f"{card_text}\n\n{stamp}"[:4096]})
+        else:
+            raise ValueError("no card text")
+    except Exception:
+        try:
+            _telegram_call("editMessageReplyMarkup", {"chat_id": chat_id, "message_id": int(message_id),
+                                                      "reply_markup": {"inline_keyboard": []}})
+        except Exception as e:
+            store.log("nyp_request_approval", "could not remove buttons", str(e)[:200])
+    notify(chat_id, message_id, note)
+
+
+def notify(chat_id: str, message_id, text: str) -> None:
+    """Send a short message, as a reply to the card when we know which one."""
+    payload = {"chat_id": chat_id, "text": text}
+    if message_id:
+        payload["reply_parameters"] = {"message_id": int(message_id), "allow_sending_without_reply": True}
+    try:
+        _telegram_call("sendMessage", payload)
+    except Exception as e:
+        store.log("nyp_request_approval", "could not send notice", str(e)[:200])
+
+
+def close_approval_card(approval: dict, note: str) -> None:
+    try:
+        chat_id = _telegram_config()["allowed_chat_id"]
+    except TelegramNotConfigured:
+        return
+    close_card(chat_id, approval.get("telegram_message_id"), note)
+
+
+def notify_result(approval_id: str, text: str) -> None:
+    """Used by the executor after Google answers: reply under the original card."""
+    approval = store.get_approval(approval_id) or {}
+    try:
+        chat_id = _telegram_config()["allowed_chat_id"]
+    except TelegramNotConfigured:
+        return
+    notify(chat_id, approval.get("telegram_message_id"), text)
+
+
+def describe_action(action: str, payload: dict) -> str:
+    """One line for the done message: what exactly happened."""
+    if action == "send_reply":
+        return f"your reply to {payload.get('to', 'the sender')} was sent"
+    verb = "moved in" if action == "calendar_move" else "added to"
+    return f"'{payload.get('title', 'the event')}' was {verb} your Google Calendar ({_when(payload)})"
+
+
 def _send_for_approval(task: dict, action: str, draft: dict) -> dict:
     """Create the approval row for a stored draft and send the Telegram card."""
     for old in store.list_approvals("pending"):
         if old["task_id"] == task["task_id"] and old["action"] == action:
             store.mark_approval(old["approval_id"], decision="cancelled", decided_at=store.now_iso())
+            close_approval_card(old, "Replaced by a newer request below. This one can no longer be approved.")
     approval = store.create_approval(task["task_id"], action, draft["content_hash"])
     config = _telegram_config()
     try:
-        _telegram_call("sendMessage", {"chat_id": config["allowed_chat_id"],
-                                       "text": _card(task, action, draft["payload"], approval),
-                                       "reply_markup": _buttons(action, approval["approval_id"])})
+        sent = _telegram_call("sendMessage", {"chat_id": config["allowed_chat_id"],
+                                              "text": _card(task, action, draft["payload"], approval),
+                                              "reply_markup": _buttons(action, approval["approval_id"])})
+        if isinstance(sent, dict) and sent.get("message_id") is not None:
+            store.mark_approval(approval["approval_id"], telegram_message_id=str(sent["message_id"]))
     except Exception as e:
         store.mark_approval(approval["approval_id"], decision="cancelled", decided_at=store.now_iso())
         store.log("nyp_request_approval", f"send failed {approval['approval_id']}", str(e))
@@ -165,6 +249,8 @@ def check_approvals() -> dict:
             draft = store.get_draft_by_hash(a["task_id"], a["content_hash"])
             if draft:
                 store.delete_draft_text(draft["draft_id"])
+            close_card(config["allowed_chat_id"], a.get("telegram_message_id"),
+                       "Expired after 30 minutes. Nothing was sent or added. Ask again if you still want it.")
             out["expired"].append(a["approval_id"])
 
     updates = _telegram_call("getUpdates", {"timeout": 0, "allowed_updates": ["callback_query"]}) or []
@@ -177,7 +263,8 @@ def check_approvals() -> dict:
             out["ignored"] += 1
             store.log("nyp_check_approvals", "ignored press", "chat id not allowed")
             continue
-        answer = _handle_press(cq.get("data", ""), out)
+        msg = cq.get("message") or {}
+        answer = _handle_press(cq.get("data", ""), out, chat_id, msg.get("message_id"), msg.get("text"))
         try:
             _telegram_call("answerCallbackQuery", {"callback_query_id": cq["id"], "text": answer})
         except Exception:
@@ -188,22 +275,29 @@ def check_approvals() -> dict:
     return out
 
 
-def _handle_press(data: str, out: dict) -> str:
+def _handle_press(data: str, out: dict, chat_id: str = "", message_id=None, card_text=None) -> str:
     parts = data.split(":")
     kind, approval_id = parts[0], parts[-1]
     a = store.get_approval(approval_id)
     if a is None or a["decision"] != "pending" or (kind == "t" and (len(parts) != 3 or parts[1] not in TONES)):
         out["ignored"] += 1
+        if a is not None and message_id:   # an old card that still shows buttons: tidy it up
+            close_card(chat_id, message_id, "This request is already closed.")
         return "This request is no longer open."
+    message_id = message_id or a.get("telegram_message_id")
     if _is_expired(a):
         store.mark_approval(approval_id, decision="expired", decided_at=store.now_iso())
         out["expired"].append(approval_id)
+        close_card(chat_id, message_id, "Expired after 30 minutes. Nothing was sent or added. Ask again if you still want it.")
         return "This request expired."
     now = store.now_iso()
     if kind == "a":
         store.mark_approval(approval_id, decision="approved", state="approved", decided_at=now)
         store.log("nyp_check_approvals", f"approved {approval_id}", f"task {a['task_id']} {a['action']}")
         out["approved"].append({"approval_id": approval_id, "task_id": a["task_id"], "action": a["action"]})
+        doing = "Sending the reply now" if a["action"] == "send_reply" else "Adding it to Google Calendar now"
+        close_card(chat_id, message_id, f"Approved. {doing}; you will get a message here when it is done.",
+                   card_text, "✅ APPROVED")
         return "Approved."
     if kind == "r":
         store.mark_approval(approval_id, decision="rejected", decided_at=now)
@@ -211,16 +305,22 @@ def _handle_press(data: str, out: dict) -> str:
         if draft:
             store.delete_draft_text(draft["draft_id"])
         task = store.get_task(a["task_id"])
-        if task and task["status"] == "pending_approval":
-            store.upsert_task(a["task_id"], status="open")
+        still_waiting = [x for x in store.list_approvals() if x["task_id"] == a["task_id"]
+                         and x["approval_id"] != approval_id
+                         and (x["decision"] == "pending" or (x["decision"] == "approved" and not x["used"]))]
+        if task and task["status"] == "pending_approval" and not still_waiting:
+            store.upsert_task(a["task_id"], status="cancelled")   # the web app shows it as Rejected
         store.log("nyp_check_approvals", f"rejected {approval_id}", f"task {a['task_id']} {a['action']}")
         out["rejected"].append({"approval_id": approval_id, "task_id": a["task_id"], "action": a["action"]})
+        close_card(chat_id, message_id, "Rejected. Nothing was sent or added.", card_text,
+                   "❌ REJECTED. Nothing was sent or added to your calendar.")
         return "Rejected. Nothing will be sent."
     if kind == "t":
         tone = parts[1]
         store.mark_approval(approval_id, decision="cancelled", decided_at=now, result_id=f"tone:{tone}")
         draft = store.get_draft_by_hash(a["task_id"], a["content_hash"])
         store.log("nyp_check_approvals", f"tone {tone} {approval_id}", f"task {a['task_id']}")
+        close_card(chat_id, message_id, f"Rewriting the reply ({TONES[tone]}). A new card will follow.")
         out["tone_requests"].append({"approval_id": approval_id, "task_id": a["task_id"], "tone": TONES[tone],
                                      "current_body": draft["payload"]["body"] if draft and draft["payload"] else None})
         return f"OK, rewriting: {TONES[tone]}."
@@ -286,3 +386,29 @@ def nyp_revise_draft(approval_id: str, new_body: str) -> dict:
         dict: {ok, approval_id (new), state: prepared, expires_at} or {ok: false, error}.
     """
     return revise_draft(approval_id, new_body)
+
+
+def create_reminder_with_approval(title: str, start: str, end: Optional[str] = None,
+                                  note: Optional[str] = None) -> dict:
+    """Create the user's reminder task and immediately send its Telegram approval card."""
+    made = create_reminder(title, start, end, note)
+    if not made["ok"]:
+        return made
+    sent = request_approval(made["task_id"], "calendar_create")
+    return {**made, "approval": sent}
+
+
+@tool(permission=ToolPermission.READ_WRITE, expected_credentials=CREDENTIALS)
+def nyp_create_reminder(title: str, start: str, end: Optional[str] = None, note: Optional[str] = None) -> dict:
+    """
+    Create a calendar event or reminder the USER asked for in chat (not from an email) and send its approval card to Telegram. Nothing is added until the user approves there.
+
+    Args:
+        title (str): Event title in your own words, max 80 characters.
+        start (str): YYYY-MM-DD for an all-day event, or YYYY-MM-DDTHH:MM in Singapore time (no offset needed).
+        end (str): Optional end, same format. Default: one hour after a timed start, or the same day for all-day.
+        note (str): Optional short reason, max 300 characters.
+    Returns:
+        dict: {ok, task_id, event, approval: {ok, approval_id, expires_at} or {ok: false, error}} or {ok: false, rejected: [...]}.
+    """
+    return create_reminder_with_approval(title, start, end, note)

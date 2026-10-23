@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Deploy the nyp inbox agent: activate the Orchestrate env, import tools, then the agent.
 # Needs WXO_SERVER_URL and WXO_API_KEY in .env (copy .env.example). Run from anywhere.
+# Usage: bash scripts/deploy.sh [--live]   (--live also deploys the agent to the live environment)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,7 +33,8 @@ declare -A APP_IDS=(
   [nyp_calendar_check.py]="nyp_google_read"
   [nyp_chat_views.py]="nyp_google_read"
   [nyp_request_approval.py]="nyp_telegram nyp_google_read"
-  [nyp_executor.py]="nyp_google_act"
+  [nyp_save_analysis.py]="nyp_telegram nyp_google_read"
+  [nyp_executor.py]="nyp_google_act nyp_telegram"
 )
 
 # Tools use only the standard library and the ADK, so no requirements file is needed.
@@ -52,4 +54,7 @@ for f in tools/nyp_*.py; do
 done
 
 orchestrate agents import -f agents/nyp_inbox_agent.yaml
+if [[ "${1:-}" == "--live" ]]; then
+  orchestrate agents deploy -n nyp_inbox_agent   # live is needed for the embedded web chat
+fi
 echo "Deployed. Open nyp_inbox_agent in Orchestrate Draft Preview and type: ping"

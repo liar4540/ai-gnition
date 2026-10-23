@@ -481,3 +481,21 @@ For the Bob tool-import issue: if tools cannot import from each other when deplo
 - [ ] Prompt-injection email is ignored
 - [ ] Dashboard, "why", "suspicious" and "inbox" commands work in the Orchestrate chat
 - [ ] Agent is live under the `nyp_` prefix; backup video recorded; Google re-authorised
+
+## Step 12: web dashboard (Inbox Shield)
+
+React 19 + Vite + Material UI dashboard in `frontend/`, with real agent data and no mocks.
+
+**Data path:** browser → local API server (`frontend/server/index.js`, localhost only) → Orchestrate runtime API (`/v1/orchestrate/runs`, IAM token from `WXO_API_KEY`) → `nyp_inbox_agent`. The message `export state` makes the agent call the read-only tool `nyp_export_state` (in `tools/nyp_chat_views.py`), and the server reads that tool's raw JSON from `step_history`, so the model never rewrites the data. Senders, subjects and received dates are fetched live from Gmail (metadata only, read refresh token) and kept in memory, never stored (rule 3).
+
+**Pages:** Dashboard (real counts, categories, threat alerts, pending approvals, activity), Inbox (search, category tabs, risk/status filters, sorting, detail drawer with evidence, confidence, task, what changed, approvals and next step), Threats, Tasks, Activity, plus the Assistant chat (same agent, through the API server).
+
+**Actions:** only **Scan inbox** (team decision). Approving stays on Telegram (rule 5). "check approvals" is typed by the user in the Assistant.
+
+**Not built (backend has no support):** spam/promotional/phishing categories (only routine/important/suspicious; phishing signals appear as evidence badges), and confirm/dismiss/correct a classification.
+
+**Replaced:** the embedded Orchestrate web chat (blocked by 401 `WXO-PROXY-10041E`) and its token server and key scripts. Our public key can be removed from Settings > Embed Security, which is an instance-wide setting.
+
+Setup: `scripts/deploy.ps1 -Live` → `scripts/get_web_config.ps1` → `cd frontend && npm install && npm run dev`.
+
+Verified: 89 Python tests; `npm run build`; the API returned real agent data in about 6 s (counts match the store), live Gmail metadata for every analysed email, and a chat reply; logic checks for status, sorting and search; screenshots at 1440 px (light and dark), 496 px, and the top bar at a true 390 px. Not verified live: a full Scan run from the button.

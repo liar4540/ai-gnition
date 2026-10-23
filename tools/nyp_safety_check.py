@@ -33,6 +33,8 @@ RULES = [
      "label": "Contains instructions aimed at an AI"},
     {"code": "AUTH_FAIL",             "adjust": -20, "risk": "medium", "reason": "Email authentication failed ({detail}).",
      "label": "SPF, DKIM or DMARC check failed"},
+    {"code": "BULK_SENDER",           "adjust": 0,   "risk": "low",    "reason": "Newsletter or marketing email with a valid signature and an unsubscribe link.",
+     "label": "Newsletter or marketing sender"},
     # Recorded by nyp_calendar_conflicts, not by check() below.
     {"code": "CALENDAR_CLASH",        "adjust": -10, "risk": "low",    "reason": "The proposed time clashes with an existing event.",
      "label": "Clashes with an existing calendar event"},
@@ -51,11 +53,26 @@ def confidence_adjustment(codes: List[str]) -> int:
 # Domains you already trust, in addition to the known_contacts passed by the agent.
 KNOWN_DOMAINS: List[str] = []
 
-URGENT_PHRASES = [
-    r"\bimmediately\b", r"verify your account", r"within 24 hours", r"\burgent(ly)?\b",
-    r"account (will be )?(suspended|locked|closed)", r"act now", r"final notice",
-    r"confirm your (password|identity|details)",
+# Account-security pressure: always a warning, newsletter or not.
+SECURITY_URGENT_PHRASES = [
+    r"verify your account", r"account (will be )?(suspended|locked|closed|disabled)",
+    r"confirm your (password|identity|details|login)", r"unusual sign-?in activity", r"reset your password now",
 ]
+# Sales-style pressure: a warning in personal mail, normal in verified newsletters.
+URGENT_PHRASES = SECURITY_URGENT_PHRASES + [
+    r"\bimmediately\b", r"within 24 hours", r"\burgent(ly)?\b", r"act now", r"final notice",
+]
+# Link hosts used by mail services, social networks and CDNs. A link there is not a sign
+# that the email pretends to be someone else.
+TRUSTED_LINK_DOMAINS = {
+    "list-manage.com", "mailchimp.com", "mcusercontent.com", "sendgrid.net", "mandrillapp.com", "mailgun.org",
+    "hubspotlinks.com", "hubspot.com", "hs-sites.com", "exacttarget.com", "sfmc-content.com", "klaviyo.com",
+    "klclick.com", "mailjet.com", "sparkpostmail.com", "amazonses.com", "awstrack.me", "cloudfront.net",
+    "googleusercontent.com", "google.com", "gstatic.com", "youtube.com", "youtu.be", "facebook.com",
+    "instagram.com", "twitter.com", "x.com", "linkedin.com", "tiktok.com", "apple.com", "w3.org",
+    "microsoft.com", "office.com",
+}
+DKIM_PASS_RE = re.compile(r"\bdkim\s*=\s*pass\b", re.I)
 PAYMENT_WORDS = [r"\binvoice\b", r"\bpayment\b", r"\bremit", r"\bwire\b", r"\btransfer\b", r"\bbilling\b"]
 BANK_CHANGE_PHRASES = [
     r"(new|updated|changed?|different)\s+(bank|banking|account|payment)\s+(details|information|info|number)",
@@ -115,10 +132,14 @@ def _first_match(patterns: List[str], text: str) -> Optional[str]:
 
 def check(sender_address: str, reply_to_address: Optional[str], subject: str, body: str,
           link_domains: Optional[List[str]], auth_results: Optional[str],
-          known_contacts: Optional[List[str]]) -> dict:
-    """Run every rule and return evidence codes, risk, confidence adjustment and reasons."""
+          known_contacts: Optional[List[str]], bulk_mail: bool = False) -> dict:
+    """Run every rule and return evidence codes, risk, confidence adjustment and reasons.
+    bulk_mail = the email has a List-Unsubscribe header. Together with a passing DKIM signature it
+    marks a verified newsletter, which gets the sales-style rules relaxed (never the fraud rules)."""
     hits = {}  # code -> detail
     text = f"{subject or ''}\n{body or ''}"
+    verified_bulk = bool(bulk_mail) and bool(DKIM_PASS_RE.search(auth_results or "")) \
+        and not AUTH_FAIL_RE.search(auth_results or "")
 
     sender = base_domain(_domain_of(sender_address))
     known = {base_domain(_domain_of(c)) for c in list(known_contacts or []) + KNOWN_DOMAINS if c}
@@ -133,14 +154,16 @@ def check(sender_address: str, reply_to_address: Optional[str], subject: str, bo
                 break
 
     reply_to = base_domain(_domain_of(reply_to_address))
-    if reply_to and sender and reply_to != sender:
+    if reply_to and sender and reply_to != sender and not verified_bulk:
         hits["REPLY_TO_MISMATCH"] = f"from {sender}, reply-to {reply_to}"
 
-    foreign = sorted({base_domain(d) for d in (link_domains or []) if d} - {sender})
-    if sender and foreign:
+    link_bases = {base_domain(d) for d in (link_domains or []) if d}
+    foreign = sorted(link_bases - {sender} - TRUSTED_LINK_DOMAINS)
+    links_home = sender in link_bases
+    if sender and foreign and not (verified_bulk and links_home):
         hits["LINK_DOMAIN_MISMATCH"] = ", ".join(foreign[:5])
 
-    urgent = _first_match(URGENT_PHRASES, text)
+    urgent = _first_match(SECURITY_URGENT_PHRASES if verified_bulk else URGENT_PHRASES, text)
     if urgent:
         hits["URGENT_LANGUAGE"] = f'"{urgent.lower()}"'
 
@@ -155,6 +178,9 @@ def check(sender_address: str, reply_to_address: Optional[str], subject: str, bo
     if auth_fails:
         hits["AUTH_FAIL"] = ", ".join(auth_fails)
 
+    if verified_bulk:
+        hits["BULK_SENDER"] = ""
+
     evidence, reasons, adjust, risk = [], [], 0, "low"
     for rule in RULES:
         if rule["code"] in hits:
@@ -163,8 +189,10 @@ def check(sender_address: str, reply_to_address: Optional[str], subject: str, bo
             adjust += rule["adjust"]
             if RISK_ORDER[rule["risk"]] > RISK_ORDER[risk]:
                 risk = rule["risk"]
-    # Several independent warning signs together are treated as high risk.
-    if risk == "medium" and sum(1 for r in RULES if r["code"] in hits and r["risk"] == "medium") >= 3:
+    # Several independent warning signs together are treated as high risk, except for a
+    # verified newsletter, where they are common and harmless (fraud rules still apply above).
+    if risk == "medium" and not verified_bulk \
+            and sum(1 for r in RULES if r["code"] in hits and r["risk"] == "medium") >= 3:
         risk = "high"
         reasons.append("Several warning signs together, so this is treated as high risk.")
 
@@ -174,7 +202,8 @@ def check(sender_address: str, reply_to_address: Optional[str], subject: str, bo
 
 @tool(permission=ToolPermission.READ_WRITE)
 def nyp_safety_check(message_id: str, sender_address: str, reply_to_address: str, subject: str, body: str,
-                     link_domains: List[str], auth_results: str, known_contacts: List[str]) -> dict:
+                     link_domains: List[str], auth_results: str, known_contacts: List[str],
+                     bulk_mail: bool = False) -> dict:
     """
     Run plain-code safety rules on one email. Call this before nyp_save_analysis. Never opens links or calls the network.
 
@@ -187,10 +216,12 @@ def nyp_safety_check(message_id: str, sender_address: str, reply_to_address: str
         link_domains (List[str]): Domains of links found in the body.
         auth_results (str): Authentication-Results header, or empty.
         known_contacts (List[str]): Addresses or domains the user already trusts.
+        bulk_mail (bool): True if the email has a List-Unsubscribe header (newsletter); optional.
     Returns:
         dict: {message_id, evidence: [codes], risk: low|medium|high, confidence_adjustment: int, quarantine: bool, reasons: [str]}.
     """
-    result = check(sender_address, reply_to_address, subject, body, link_domains, auth_results, known_contacts)
+    result = check(sender_address, reply_to_address, subject, body, link_domains, auth_results, known_contacts,
+                   bulk_mail)
     store.record_safety(message_id, result["risk"], result["evidence"], result["quarantine"])
     store.log("nyp_safety_check", f"checked {message_id}",
               f"risk={result['risk']} evidence={','.join(result['evidence']) or 'none'}")

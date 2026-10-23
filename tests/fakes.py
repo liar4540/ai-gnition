@@ -68,15 +68,29 @@ class FakeTelegram:
     def __init__(self, fail_send=False):
         self.sent = []
         self.answers = []
+        self.edits = []           # editMessageReplyMarkup calls (buttons removed)
         self.queue = []
         self.next_update = 1
         self.fail_send = fail_send
 
-    def press(self, data, chat_id):
+    def press(self, data, chat_id, message_id=None):
+        """Press a button on a card; message_id defaults to the last card sent."""
+        message_id = message_id if message_id is not None else self.last_card_id()
         self.queue.append({"update_id": self.next_update,
                            "callback_query": {"id": f"cq{self.next_update}", "data": data,
-                                              "message": {"chat": {"id": int(chat_id)}}}})
+                                              "message": {"message_id": message_id, "chat": {"id": int(chat_id)},
+                                                          "text": self._text_of(message_id)}}})
         self.next_update += 1
+
+    def _text_of(self, message_id):
+        return self.sent[message_id - 1]["text"] if message_id and message_id <= len(self.sent) else None
+
+    def last_card_id(self):
+        cards = [i + 1 for i, m in enumerate(self.sent) if m.get("reply_markup")]
+        return cards[-1] if cards else None
+
+    def replies_to(self, message_id):
+        return [m["text"] for m in self.sent if (m.get("reply_parameters") or {}).get("message_id") == message_id]
 
     def __call__(self, method, payload):
         if method == "sendMessage":
@@ -84,6 +98,9 @@ class FakeTelegram:
                 raise RuntimeError("network down")
             self.sent.append(payload)
             return {"message_id": len(self.sent)}
+        if method in ("editMessageReplyMarkup", "editMessageText"):
+            self.edits.append(payload)
+            return True
         if method == "getUpdates":
             if "offset" in payload:
                 self.queue = [u for u in self.queue if u["update_id"] >= payload["offset"]]

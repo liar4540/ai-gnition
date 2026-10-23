@@ -7,3 +7,6 @@ environments:
   draft:
     security_scheme: key_value_creds
     type: team
+  live:
+    security_scheme: key_value_creds
+    type: team

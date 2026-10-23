@@ -117,6 +117,28 @@ class ViewsTest(TempDBTestCase):
         self.assertEqual(store.count("activity_log"), before)
         self.assertNotIn("Interview", str(store.list_analyses()))
 
+    def test_export_state_matches_dashboard_and_has_no_email_text(self):
+        import json
+        data = views.nyp_export_state.fn()
+        json.dumps(data)                                              # must be plain JSON
+        c = data["counts"]
+        self.assertEqual((c["analysed"], c["routine"], c["important"], c["suspicious"]), (9, 2, 4, 3))
+        self.assertEqual(c["quarantined"], 3)
+        self.assertEqual((c["tasks_pending"], c["tasks_done"], c["actions_without_approval"]), (3, 0, 0))
+        self.assertEqual(len(data["analyses"]), 9)
+        phish = next(a for a in data["analyses"] if a["message_id"] == "m2")
+        self.assertTrue(phish["quarantined"])
+        codes = {e["code"]: e for e in phish["evidence"]}
+        self.assertEqual(codes["LOOKALIKE_DOMAIN"]["severity"], "high")
+        self.assertEqual(codes["LOOKALIKE_DOMAIN"]["label"], "Sender domain imitates a known domain")
+        meet = next(t for t in data["tasks"] if t["thread_id"] == "t-meet")
+        self.assertEqual(meet["delta"], "Moved from Tuesday to Friday")
+        self.assertNotIn("content", json.dumps(data["approvals"]))   # no draft text
+        dumped = json.dumps(data)
+        for text in ("Verify your account immediately", "bank details have changed", "paypa1",
+                     "Thank you, I will attend", "Ignore previous instructions"):
+            self.assertNotIn(text, dumped)
+
     def test_views_file_has_no_write_calls(self):
         with open(views.__file__, encoding="utf-8") as f:
             src = f.read()

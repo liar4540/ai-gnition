@@ -123,6 +123,68 @@ def activity(limit: int = 20) -> str:
                   [[r["ts"][:19].replace("T", " "), r["actor"], r["event"], r["result"]] for r in rows])
 
 
+def _severity(code: str) -> str:
+    rule = RULES_BY_CODE.get(code, {})
+    if rule.get("adjust", 0) > 0:
+        return "safe"
+    return {"high": "high", "medium": "warning"}.get(rule.get("risk"), "info")
+
+
+def export_state(limit: int = 200) -> dict:
+    """Everything the web dashboard shows, as JSON. Same sources and counts as dashboard();
+    no email text, no draft content, no tokens."""
+    c = store.count
+    analyses = [
+        {
+            "message_id": a["message_id"], "thread_id": a["thread_id"], "category": a["category"],
+            "risk": a["risk"], "confidence": a["confidence"], "band": a["band"],
+            "quarantined": bool(a["quarantined"]), "created_at": a["created_at"],
+            "evidence": [{"code": e, "label": label(e), "severity": _severity(e)} for e in a["evidence"]],
+        }
+        for a in store.list_analyses() if a["category"]
+    ][-limit:]
+    task_fields = ("task_id", "thread_id", "source_message_ids", "title", "deadline", "status", "confidence",
+                   "reason", "delta", "calendar_event_id", "created_at", "updated_at")
+    tasks_out = [{k: t[k] for k in task_fields} for t in store.list_tasks()][-limit:]
+    approval_fields = ("approval_id", "task_id", "action", "decision", "state", "expires_at", "used",
+                       "decided_at", "result_id")
+    approvals_out = [{k: a[k] for k in approval_fields} for a in store.list_approvals()][-limit:]
+    counts = {
+        "analysed": len(analyses),
+        "routine": c("analyses", "category=?", ("routine",)),
+        "important": c("analyses", "category=?", ("important",)),
+        "suspicious": c("analyses", "category=?", ("suspicious",)),
+        "quarantined": c("analyses", "quarantined=1"),
+        "tasks_pending": c("tasks", "status IN ('open','pending_approval','on_hold')"),
+        "tasks_done": c("tasks", "status='done'"),
+        "approvals_total": c("approvals"),
+        "approvals_pending": c("approvals", "decision='pending'"),
+        "approvals_approved": c("approvals", "decision='approved'"),
+        "approvals_rejected": c("approvals", "decision='rejected'"),
+        "approvals_cancelled": c("approvals", "decision IN ('cancelled','expired')"),
+        "actions_without_approval": c("approvals", "state='confirmed' AND decision!='approved'"),
+        "deadlines_detected": c("tasks", "deadline IS NOT NULL"),
+        "events_added": c("approvals", "action IN ('calendar_create','calendar_move') AND state='confirmed'"),
+        "replies_sent": c("approvals", "action='send_reply' AND state='confirmed'"),
+        "followups_drafted": store.count_distinct("drafts", "task_id", "action='send_reply'"),
+    }
+    return {"generated_at": store.now_iso(), "counts": counts, "analyses": analyses, "tasks": tasks_out,
+            "approvals": approvals_out, "activity": store.list_activity(limit)}
+
+
+@tool(permission=ToolPermission.READ_ONLY)
+def nyp_export_state(limit: int = 200) -> dict:
+    """
+    Export the dashboard data as JSON for the web app: analyses, tasks, approvals, activity and counts. No email text.
+
+    Args:
+        limit (int): Maximum rows per list, default 200.
+    Returns:
+        dict: {generated_at, counts, analyses, tasks, approvals, activity}.
+    """
+    return export_state(limit)
+
+
 @tool(permission=ToolPermission.READ_ONLY)
 def nyp_dashboard() -> str:
     """

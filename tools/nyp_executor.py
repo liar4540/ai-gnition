@@ -99,10 +99,13 @@ def execute(approval_id: str, action: str) -> dict:
     except Exception as e:
         store.mark_approval(approval_id, state="failed")
         store.log("nyp_execute", f"failed {approval_id}", str(e))
+        _tell(approval_id, f"Could not finish this: {str(e)[:150]}. Nothing was changed. "
+                           "Ask again in the dashboard assistant to retry.")
         return {"ok": False, "status": "failed", "state": "attempted then failed",
                 "reason": f"{e}. Nothing was confirmed; you can request a new approval to retry."}
 
     store.mark_approval(approval_id, state="confirmed", result_id=result_id)
+    done_text = _done_text(a["action"], payload)
     store.delete_draft_text(draft["draft_id"])
     task_fields = {}
     if a["action"] in ("calendar_create", "calendar_move"):
@@ -115,11 +118,32 @@ def execute(approval_id: str, action: str) -> dict:
 
     status = {"send_reply": "sent", "calendar_create": "added", "calendar_move": "moved"}[a["action"]]
     store.log("nyp_execute", f"{status} {approval_id}", f"task {a['task_id']} id {result_id}")
+    _tell(approval_id, f"Done! {done_text}.")
     return {"ok": True, "status": status, "id": result_id, "task_id": a["task_id"]}
 
 
+def _done_text(action: str, payload: dict) -> str:
+    try:
+        import nyp_request_approval as approvals
+        return approvals.describe_action(action, payload)
+    except Exception:
+        return {"send_reply": "The reply was sent", "calendar_move": "The event was moved"}.get(action, "The event was added")
+
+
+def _tell(approval_id: str, text: str) -> None:
+    """Confirm the outcome on Telegram, under the original card. Only after Google answered,
+    and never able to change the outcome: a Telegram failure is ignored."""
+    try:
+        import nyp_request_approval as approvals   # imported here to keep this file's imports minimal
+        approvals.notify_result(approval_id, text)
+    except (Exception, SystemExit):
+        pass
+
+
 @tool(permission=ToolPermission.READ_WRITE,
-      expected_credentials=[ExpectedCredentials(app_id=APP_ID, type=ConnectionType.KEY_VALUE)])
+      expected_credentials=[ExpectedCredentials(app_id=APP_ID, type=ConnectionType.KEY_VALUE),
+                            # Telegram is only used to post the "Done" confirmation under the card.
+                            ExpectedCredentials(app_id="nyp_telegram", type=ConnectionType.KEY_VALUE)])
 def nyp_execute(approval_id: str, action: str) -> dict:
     """
     Carry out ONE action the user approved on Telegram. Only use an approval_id that nyp_check_approvals just reported as approved.

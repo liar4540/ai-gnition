@@ -1,0 +1,30 @@
+{
+  "name": "nyp-inbox-agent-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n web,api -c blue,magenta \"vite\" \"node --env-file-if-exists=../.env --env-file-if-exists=server/.env server/index.js\"",
+    "dev:web": "vite",
+    "api": "node --env-file-if-exists=../.env --env-file-if-exists=server/.env server/index.js",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@emotion/react": "11.14.0",
+    "@emotion/styled": "11.14.1",
+    "@mui/icons-material": "9.5.0",
+    "@mui/material": "9.5.0",
+    "express": "5.3.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-markdown": "10.1.0",
+    "react-router-dom": "7.18.4",
+    "remark-gfm": "4.0.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "6.1.2",
+    "concurrently": "10.0.6",
+    "vite": "8.3.5"
+  }
+}

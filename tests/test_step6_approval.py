@@ -58,7 +58,9 @@ class ApprovalTest(TempDBTestCase):
     def test_calendar_card_has_event_and_reminders_and_no_tone_buttons(self):
         aid = self.request("calendar_create")
         msg = self.tg.sent[0]
-        self.assertIn("When: 2026-10-23T14:00:00+08:00 to 2026-10-23T15:00:00+08:00", msg["text"])
+        self.assertIn("When: Fri 23 Oct 2026, 2:00 PM to 3:00 PM (SGT)", msg["text"])
+        self.assertIn("Expires: ", msg["text"])
+        self.assertNotIn("UTC", msg["text"])
         self.assertIn("Reminders: 24h before, 1h before", msg["text"])
         self.assertEqual(len(msg["reply_markup"]["inline_keyboard"]), 1)
         self.assertEqual(store.get_approval(aid)["action"], "calendar_create")
@@ -97,7 +99,7 @@ class ApprovalTest(TempDBTestCase):
         self.assertEqual(a["decision"], "rejected")
         draft = store.get_draft_by_hash(self.task_id, a["content_hash"])
         self.assertIsNone(draft["content"])
-        self.assertEqual(store.get_task(self.task_id)["status"], "open")
+        self.assertEqual(store.get_task(self.task_id)["status"], "cancelled")   # shown as Rejected on the web
 
     def test_expired_approval_is_marked_expired(self):
         aid = self.request()
@@ -149,6 +151,136 @@ class ApprovalTest(TempDBTestCase):
         second = self.request("calendar_create")
         self.assertEqual(store.get_approval(first)["decision"], "cancelled")
         self.assertEqual(store.get_approval(second)["decision"], "pending")
+
+    def test_user_reminder_card_says_it_came_from_chat(self):
+        from nyp_save_analysis import create_reminder
+        r = create_reminder("Leon's death anniversary", "2026-10-25")
+        self.assertTrue(r["ok"], r)
+        out = ra.request_approval(r["task_id"], "calendar_create")
+        self.assertTrue(out["ok"], out)
+        text = self.tg.sent[-1]["text"]
+        self.assertIn("When: Sun 25 Oct 2026 (all day)", text)
+        self.assertIn("Source: you asked for this in chat", text)
+        self.assertNotIn("Risk: unknown", text)
+
+    def test_reminder_tool_sends_its_card_without_a_second_call(self):
+        before = len(self.tg.sent)
+        r = ra.nyp_create_reminder.fn("Zoom meeting", "2026-10-25T15:00")
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(r["approval"]["ok"], r["approval"])
+        self.assertEqual(len(self.tg.sent), before + 1)
+        self.assertIn("Sun 25 Oct 2026, 3:00 PM to 4:00 PM (SGT)", self.tg.sent[-1]["text"])
+        a = store.get_approval(r["approval"]["approval_id"])
+        self.assertEqual((a["action"], a["decision"]), ("calendar_create", "pending"))
+
+    def test_saving_an_analysis_sends_its_approvals_in_code(self):
+        from nyp_save_analysis import save_and_request
+        nyp_safety_check.fn("m9", "hr@acmecorp.com", "", "Meet", "Friday 3pm.", [], "", ["acmecorp.com"])
+        before = len(self.tg.sent)
+        r = save_and_request("m9", "t9", "important", "Meet Acme on Friday", "2026-10-30T15:00:00+08:00",
+                             "calendar", None, None, 85, "Meeting with a fixed time.")
+        self.assertEqual([x["action"] for x in r["approvals"]], ["calendar_create"])
+        self.assertTrue(r["approvals"][0]["ok"], r["approvals"])
+        self.assertEqual(len(self.tg.sent), before + 1)
+
+    def test_batch_save_saves_each_email_and_sends_approvals(self):
+        from nyp_save_analysis import save_many
+        nyp_safety_check.fn("b1", "hr@acmecorp.com", "", "Meet", "Friday 3pm.", [], "", ["acmecorp.com"])
+        nyp_safety_check.fn("b2", "news@shop.com", "", "Deals", "Sale.", [], "", [])
+        nyp_safety_check.fn("b3", "x@acrnecorp.com", "", "Verify", "Verify your account immediately.", ["evil.xyz"], "", ["acmecorp.com"])
+        before = len(self.tg.sent)
+        r = save_many([
+            {"message_id": "b1", "thread_id": "tb1", "category": "important", "task_title": "Meet Acme Friday",
+             "deadline": "2026-10-30T15:00:00+08:00", "action": "calendar", "model_confidence": 85, "reason": "Meeting."},
+            {"message_id": "b2", "thread_id": "tb2", "category": "routine", "action": "none", "model_confidence": 95, "reason": "Ad."},
+            {"message_id": "b3", "thread_id": "tb3", "category": "important", "action": "none", "model_confidence": 80, "reason": "Odd."},
+            {"message_id": "b4", "thread_id": "tb4", "category": "nonsense", "action": "none", "model_confidence": 80, "reason": "x"},
+        ])
+        self.assertEqual((r["saved"], r["rejected"]), (3, 1))
+        res = {x["message_id"]: x for x in r["results"]}
+        self.assertEqual(res["b1"]["approvals_sent"], ["calendar_create"])
+        self.assertTrue(res["b3"]["quarantined"])
+        self.assertFalse(res["b4"]["ok"])
+        self.assertEqual(len(self.tg.sent), before + 1)
+        self.assertEqual(store.get_analysis("b2")["category"], "routine")
+
+    def test_approve_removes_buttons_and_says_it_is_working(self):
+        aid = self.request("calendar_create")
+        card = self.tg.last_card_id()
+        self.assertEqual(store.get_approval(aid)["telegram_message_id"], str(card))
+        self.tg.press(f"a:{aid}", CHAT)
+        ra.check_approvals()
+        edit = self.tg.edits[-1]
+        self.assertEqual((edit["message_id"], "reply_markup" in edit), (card, False))   # buttons gone
+        self.assertTrue(edit["text"].endswith("✅ APPROVED"))
+        self.assertIn("Approved. Adding it to Google Calendar now", self.tg.replies_to(card)[-1])
+
+    def test_reject_removes_buttons_and_confirms(self):
+        aid = self.request()
+        card = self.tg.last_card_id()
+        self.tg.press(f"r:{aid}", CHAT)
+        ra.check_approvals()
+        edit = self.tg.edits[-1]
+        self.assertEqual((edit["message_id"], "reply_markup" in edit), (card, False))   # buttons gone
+        self.assertIn("Approval needed:", edit["text"])                                  # card kept
+        self.assertIn("❌ REJECTED", edit["text"])
+        self.assertIn("Rejected. Nothing was sent or added.", self.tg.replies_to(card)[-1])
+
+    def test_reject_one_of_two_keeps_task_waiting_for_the_other(self):
+        self.request("calendar_create")
+        reply = self.request()
+        self.tg.press(f"r:{reply}", CHAT)
+        ra.check_approvals()
+        self.assertEqual(store.get_task(self.task_id)["status"], "pending_approval")
+
+    def test_replaced_and_expired_cards_lose_their_buttons(self):
+        first = self.request("calendar_create")
+        first_card = self.tg.last_card_id()
+        self.request("calendar_create")                  # replaces the first
+        self.assertEqual(self.tg.edits[-1]["message_id"], first_card)
+        self.assertIn("Replaced by a newer request", self.tg.replies_to(first_card)[-1])
+        second = [a for a in store.list_approvals("pending")][0]
+        store.mark_approval(second["approval_id"], expires_at=(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat())
+        ra.check_approvals()
+        self.assertEqual(self.tg.edits[-1]["message_id"], int(second["telegram_message_id"]))
+        self.assertEqual(store.get_approval(first)["decision"], "cancelled")
+
+    def test_pressing_an_already_closed_card_tidies_it(self):
+        aid = self.request()
+        card = self.tg.last_card_id()
+        self.tg.press(f"r:{aid}", CHAT)
+        ra.check_approvals()
+        edits = len(self.tg.edits)
+        self.tg.press(f"a:{aid}", CHAT, card)           # old buttons still showing on another device
+        ra.check_approvals()
+        self.assertEqual(len(self.tg.edits), edits + 1)
+        self.assertEqual(store.get_approval(aid)["decision"], "rejected")   # decision unchanged
+
+    def test_executor_posts_done_under_the_card(self):
+        import nyp_executor as ex
+        aid = self.request("calendar_create")
+        card = self.tg.last_card_id()
+        self.tg.press(f"a:{aid}", CHAT)
+        ra.check_approvals()
+        with mock.patch.object(ex, "_google_call", lambda m, u, b: {"id": "evt-77"}):
+            out = ex.execute(aid, "calendar_create")
+        self.assertEqual(out["status"], "added")
+        done = self.tg.replies_to(card)[-1]
+        self.assertTrue(done.startswith("Done! 'Reply to Acme interview invite' was added to your Google Calendar"), done)
+        self.assertIn("Fri 23 Oct 2026, 2:00 PM to 3:00 PM (SGT)", done)
+
+    def test_executor_failure_is_reported_under_the_card(self):
+        import nyp_executor as ex
+        aid = self.request("calendar_create")
+        card = self.tg.last_card_id()
+        self.tg.press(f"a:{aid}", CHAT)
+        ra.check_approvals()
+        def boom(*_):
+            raise RuntimeError("Google API 503: Service Unavailable")
+        with mock.patch.object(ex, "_google_call", boom):
+            self.assertEqual(ex.execute(aid, "calendar_create")["status"], "failed")
+        self.assertIn("Could not finish this", self.tg.replies_to(card)[-1])
+        self.assertIn("Nothing was changed", self.tg.replies_to(card)[-1])
 
     def test_bad_action_rejected(self):
         self.assertFalse(ra.request_approval(self.task_id, "forward_all")["ok"])

@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS approvals (
   approval_id TEXT PRIMARY KEY, task_id INTEGER, action TEXT CHECK (action IN ('send_reply','calendar_create','calendar_move')),
   content_hash TEXT, decision TEXT CHECK (decision IN ('pending','approved','rejected','cancelled','expired')),
   state TEXT CHECK (state IN ('prepared','approved','attempted','confirmed','failed')),
-  expires_at TEXT, used INTEGER DEFAULT 0, decided_at TEXT, result_id TEXT);
+  expires_at TEXT, used INTEGER DEFAULT 0, decided_at TEXT, result_id TEXT, telegram_message_id TEXT);
 CREATE TABLE IF NOT EXISTS activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts TEXT, actor TEXT, event TEXT, result TEXT);
 """
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT,
 TABLES = ("sync_state", "analyses", "tasks", "drafts", "approvals", "activity_log")
 TASK_FIELDS = ("thread_id", "source_message_ids", "title", "deadline", "status", "confidence",
                "reason", "delta", "calendar_event_id")
-APPROVAL_FIELDS = ("decision", "state", "used", "decided_at", "result_id", "expires_at")
+APPROVAL_FIELDS = ("decision", "state", "used", "decided_at", "result_id", "expires_at", "telegram_message_id")
 
 
 def db_path() -> str:
@@ -57,6 +57,10 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    # Migration for databases created before the column existed (keeps their data).
+    if "telegram_message_id" not in {r[1] for r in conn.execute("PRAGMA table_info(approvals)")}:
+        conn.execute("ALTER TABLE approvals ADD COLUMN telegram_message_id TEXT")
+        conn.commit()
     return conn
 
 
@@ -77,6 +81,11 @@ def _execute(sql: str, params: tuple = ()) -> int:
         return cur.lastrowid
     finally:
         conn.close()
+
+
+# The user's time zone. A time without an offset ("2026-10-25T09:00") means 09:00 here,
+# not 09:00 UTC. Singapore has no daylight saving, so a fixed offset is exact.
+LOCAL_TZ = timezone(timedelta(hours=8), "SGT")
 
 
 def now_iso() -> str:
