@@ -121,3 +121,82 @@ class FakeCalendar:
         lo, hi = params["timeMin"], params["timeMax"]
         hits = [e for e in self.events if e["start"]["dateTime"] < hi and e["end"]["dateTime"] > lo]
         return {"items": hits}
+
+
+class FakeSupabase:
+    """In-memory Supabase REST API (PostgREST): the subset nyp_store uses. Replaces
+    nyp_store._rest_call(method, url, headers, body) -> (status, json, headers)."""
+
+    IDENTITY = {"tasks": "task_id", "drafts": "draft_id", "activity_log": "id", "web_decisions": "id"}
+    DEFAULTS = {"analyses": {"quarantined": 0}, "drafts": {"deleted": 0}, "approvals": {"used": 0},
+                "web_decisions": {"status": "queued"}}
+
+    def __init__(self, key="sb_secret_test"):
+        self.key = key
+        self.tables = {}
+        self.next_id = {}
+        self.calls = []
+
+    @staticmethod
+    def _parse(url):
+        import urllib.parse
+        parts = urllib.parse.urlsplit(url)
+        assert parts.path.startswith("/rest/v1/"), url
+        return parts.path[len("/rest/v1/"):], urllib.parse.parse_qsl(parts.query)
+
+    @staticmethod
+    def _match(row, query):
+        for col, cond in query:
+            if col in ("select", "order", "limit", "on_conflict"):
+                continue
+            if cond == "not.is.null":
+                if row.get(col) is None:
+                    return False
+            elif cond.startswith("eq."):
+                if row.get(col) is None or str(row.get(col)) != cond[3:]:
+                    return False
+            else:
+                raise AssertionError(f"unsupported filter {col}={cond}")
+        return True
+
+    def __call__(self, method, url, headers, body=None):
+        assert headers.get("apikey") == self.key, "missing or wrong apikey header"
+        table, query = self._parse(url)
+        self.calls.append((method, table, query))
+        rows = self.tables.setdefault(table, [])
+        prefer = headers.get("Prefer", "")
+        q = dict(query)
+        if method == "GET":
+            hits = [dict(r) for r in rows if self._match(r, query)]
+            if "order" in q:
+                col, direction = q["order"].rsplit(".", 1)
+                hits.sort(key=lambda r: (r.get(col) is None, r.get(col)), reverse=direction == "desc")
+            total = len(hits)
+            if "limit" in q:
+                hits = hits[: int(q["limit"])]
+            return 200, hits, {"Content-Range": f"0-{max(len(hits) - 1, 0)}/{total}"}
+        if method == "POST":
+            new = dict(body)
+            if "on_conflict" in q:                     # upsert (merge-duplicates)
+                key = q["on_conflict"]
+                for r in rows:
+                    if r.get(key) == new.get(key):
+                        r.update(new)
+                        return 201, None, {}
+            row = {**self.DEFAULTS.get(table, {}), **new}
+            if table in self.IDENTITY and row.get(self.IDENTITY[table]) is None:
+                self.next_id[table] = self.next_id.get(table, 0) + 1
+                row[self.IDENTITY[table]] = self.next_id[table]
+            rows.append(row)
+            return 201, ([dict(row)] if "return=representation" in prefer else None), {}
+        if method == "PATCH":
+            changed = []
+            for r in rows:
+                if self._match(r, query):
+                    r.update(body)
+                    changed.append(dict(r))
+            return 200, (changed if "return=representation" in prefer else None), {}
+        if method == "DELETE":
+            self.tables[table] = [r for r in rows if not self._match(r, query)]
+            return 204, None, {}
+        raise AssertionError(f"unexpected method {method}")

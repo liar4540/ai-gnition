@@ -28,4 +28,11 @@ export const api = {
   chat: (message, threadId) =>
     request("/api/chat", { method: "POST", body: JSON.stringify({ message, thread_id: threadId }) }),
   messages: (ids) => request(`/api/messages?ids=${ids.map(encodeURIComponent).join(",")}`),
+  owner: () => request("/api/owner"),
+  login: (pin) => request("/api/owner/login", { method: "POST", body: JSON.stringify({ pin }) }),
+  logout: () => request("/api/owner/logout", { method: "POST", body: "{}" }),
+  // decision: "approve" | "reject" | "edit" (with body). Owner only; the agent applies it.
+  decide: (approvalId, decision, body) =>
+    request(`/api/approvals/${encodeURIComponent(approvalId)}/decision`,
+            { method: "POST", body: JSON.stringify({ decision, ...(body !== undefined ? { body } : {}) }) }),
 };

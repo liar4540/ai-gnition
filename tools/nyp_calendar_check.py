@@ -45,7 +45,7 @@ def conflicts(start: str, end: str) -> dict:
 
 
 @tool(permission=ToolPermission.READ_WRITE,   # writes only our own store (clash evidence), never Calendar
-      expected_credentials=[ExpectedCredentials(app_id=APP_ID, type=ConnectionType.KEY_VALUE)])
+      expected_credentials=[ExpectedCredentials(app_id=APP_ID, type=ConnectionType.KEY_VALUE)] + store.DB_CREDENTIALS)
 def nyp_calendar_conflicts(start: str, end: str, message_id: Optional[str] = None) -> dict:
     """
     List calendar events overlapping a time window and say whether it clashes.

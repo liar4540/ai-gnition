@@ -35,14 +35,17 @@ Connect-Orch $envVars["WXO_SERVER_URL"] $envVars["WXO_API_KEY"]
 
 # Only the connections listed for a file are attached to it:
 # nyp_google_act (send + calendar write) goes to nyp_executor.py and nowhere else.
+# nyp_db (Supabase) goes to every file that reads or writes the store.
 $AppIds = @{
-    "nyp_read_mail.py"        = @("nyp_google_read")
+    "nyp_store.py"            = @("nyp_db")
+    "nyp_safety_check.py"     = @("nyp_db")
+    "nyp_read_mail.py"        = @("nyp_google_read", "nyp_db")
     "nyp_diagnose.py"         = @("nyp_google_read")
-    "nyp_calendar_check.py"   = @("nyp_google_read")
-    "nyp_chat_views.py"       = @("nyp_google_read")
-    "nyp_request_approval.py" = @("nyp_telegram", "nyp_google_read")
-    "nyp_save_analysis.py"    = @("nyp_telegram", "nyp_google_read")
-    "nyp_executor.py"         = @("nyp_google_act", "nyp_telegram")
+    "nyp_calendar_check.py"   = @("nyp_google_read", "nyp_db")
+    "nyp_chat_views.py"       = @("nyp_google_read", "nyp_db")
+    "nyp_request_approval.py" = @("nyp_telegram", "nyp_google_read", "nyp_db")
+    "nyp_save_analysis.py"    = @("nyp_telegram", "nyp_google_read", "nyp_db")
+    "nyp_executor.py"         = @("nyp_google_act", "nyp_telegram", "nyp_db")
 }
 
 foreach ($f in Get-ChildItem "tools\nyp_*.py" | Sort-Object Name) {

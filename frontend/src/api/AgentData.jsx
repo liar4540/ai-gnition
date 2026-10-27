@@ -17,6 +17,7 @@ export function AgentDataProvider({ children }) {
   const [sync, setSync] = useState(null); // last Telegram approval sync from the API server
   const [notice, setNotice] = useState(null); // { severity, text }
   const [meta, setMeta] = useState({}); // message_id -> live Gmail metadata (memory only)
+  const [owner, setOwner] = useState({ enabled: false, owner: false, web_actions: false });
   const metaPending = useRef(new Set());
   const stateRef = useRef(null);
 
@@ -65,6 +66,39 @@ export function AgentDataProvider({ children }) {
     const id = setInterval(tick, SYNC_POLL_MS);
     return () => clearInterval(id);
   }, [refresh]);
+
+  const loadOwner = useCallback(async () => {
+    try {
+      setOwner(await api.owner());
+    } catch {
+      /* the state error banner already covers an unreachable API */
+    }
+  }, []);
+  useEffect(() => {
+    loadOwner();
+  }, [loadOwner]);
+
+  const signIn = useCallback(async (pin) => {
+    await api.login(pin);
+    await loadOwner();
+  }, [loadOwner]);
+  const signOut = useCallback(async () => {
+    await api.logout().catch(() => {});
+    await loadOwner();
+  }, [loadOwner]);
+
+  // The owner's Send / Don't send / Edit. The server queues it and the agent applies it within
+  // seconds, so refresh a few times to show the outcome.
+  const decide = useCallback(async (approvalId, decision, body) => {
+    try {
+      await api.decide(approvalId, decision, body);
+    } catch (e) {
+      if (e.status === 401) loadOwner();
+      throw e;
+    }
+    for (const ms of [1500, 5000, 10000, 20000, 40000, 70000]) setTimeout(() => refresh(true), ms);
+    refresh(true);
+  }, [refresh, loadOwner]);
 
   // window: null = new mail; { period } or { start_date, end_date } = older mail, read in batches
   const startScan = useCallback(async (window = null) => {
@@ -132,7 +166,7 @@ export function AgentDataProvider({ children }) {
 
   const value = {
     state, emails, loading, error, lastUpdated, refresh, scan, startScan, sync,
-    notice, clearNotice: () => setNotice(null), loadMeta, meta,
+    notice, clearNotice: () => setNotice(null), loadMeta, meta, owner, signIn, signOut, decide,
   };
   return <AgentDataContext.Provider value={value}>{children}</AgentDataContext.Provider>;
 }

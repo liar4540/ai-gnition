@@ -27,14 +27,17 @@ orchestrate env activate nyp_env --api-key "$WXO_API_KEY"
 # Each tool file is imported with the whole tools/ folder as package root so it can
 # import nyp_store helpers. Only the connections listed for a file are attached to it:
 # nyp_google_act (send + calendar write) goes to nyp_executor.py and nowhere else.
+# nyp_db (Supabase) goes to every file that reads or writes the store.
 declare -A APP_IDS=(
-  [nyp_read_mail.py]="nyp_google_read"
+  [nyp_store.py]="nyp_db"
+  [nyp_safety_check.py]="nyp_db"
+  [nyp_read_mail.py]="nyp_google_read nyp_db"
   [nyp_diagnose.py]="nyp_google_read"
-  [nyp_calendar_check.py]="nyp_google_read"
-  [nyp_chat_views.py]="nyp_google_read"
-  [nyp_request_approval.py]="nyp_telegram nyp_google_read"
-  [nyp_save_analysis.py]="nyp_telegram nyp_google_read"
-  [nyp_executor.py]="nyp_google_act nyp_telegram"
+  [nyp_calendar_check.py]="nyp_google_read nyp_db"
+  [nyp_chat_views.py]="nyp_google_read nyp_db"
+  [nyp_request_approval.py]="nyp_telegram nyp_google_read nyp_db"
+  [nyp_save_analysis.py]="nyp_telegram nyp_google_read nyp_db"
+  [nyp_executor.py]="nyp_google_act nyp_telegram nyp_db"
 )
 
 # Tools use only the standard library and the ADK, so no requirements file is needed.

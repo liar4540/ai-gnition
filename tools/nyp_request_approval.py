@@ -32,7 +32,7 @@ ACTIONS = ("send_reply", "calendar_create", "calendar_move")
 TONES = {"formal": "More formal", "firm": "Firmer", "short": "Shorten"}
 NOT_CONFIGURED = "telegram not configured"
 CREDENTIALS = [ExpectedCredentials(app_id=TELEGRAM_APP_ID, type=ConnectionType.KEY_VALUE),
-               ExpectedCredentials(app_id=GOOGLE_READ_APP_ID, type=ConnectionType.KEY_VALUE)]
+               ExpectedCredentials(app_id=GOOGLE_READ_APP_ID, type=ConnectionType.KEY_VALUE)] + store.DB_CREDENTIALS
 
 
 class TelegramNotConfigured(Exception):
@@ -245,13 +245,14 @@ def check_approvals() -> dict:
 
     for a in store.list_approvals("pending"):
         if _is_expired(a):
+            # The draft is kept: expiry is not the user's decision, and it can still be sent
+            # from the dashboard (a new approval) or rejected. Its text goes once decided.
             store.mark_approval(a["approval_id"], decision="expired", decided_at=store.now_iso())
-            draft = store.get_draft_by_hash(a["task_id"], a["content_hash"])
-            if draft:
-                store.delete_draft_text(draft["draft_id"])
             close_card(config["allowed_chat_id"], a.get("telegram_message_id"),
                        "Expired after 30 minutes. Nothing was sent or added. Ask again if you still want it.")
             out["expired"].append(a["approval_id"])
+
+    _apply_web_decisions(out, config["allowed_chat_id"])
 
     updates = _telegram_call("getUpdates", {"timeout": 0, "allowed_updates": ["callback_query"]}) or []
     for upd in updates:
@@ -275,7 +276,7 @@ def check_approvals() -> dict:
     return out
 
 
-def _handle_press(data: str, out: dict, chat_id: str = "", message_id=None, card_text=None) -> str:
+def _handle_press(data: str, out: dict, chat_id: str = "", message_id=None, card_text=None, via: str = "") -> str:
     parts = data.split(":")
     kind, approval_id = parts[0], parts[-1]
     a = store.get_approval(approval_id)
@@ -291,13 +292,20 @@ def _handle_press(data: str, out: dict, chat_id: str = "", message_id=None, card
         close_card(chat_id, message_id, "Expired after 30 minutes. Nothing was sent or added. Ask again if you still want it.")
         return "This request expired."
     now = store.now_iso()
+    where = " on the web dashboard" if via == "web" else ""
+    if via == "web" and card_text is None and kind in ("a", "r"):
+        # A web decision has no Telegram text to hand: rebuild the card so it can be stamped.
+        draft = store.get_draft_by_hash(a["task_id"], a["content_hash"])
+        task = store.get_task(a["task_id"])
+        if draft and draft["payload"] and task:
+            card_text = _card(task, a["action"], draft["payload"], a)
     if kind == "a":
         store.mark_approval(approval_id, decision="approved", state="approved", decided_at=now)
         store.log("nyp_check_approvals", f"approved {approval_id}", f"task {a['task_id']} {a['action']}")
         out["approved"].append({"approval_id": approval_id, "task_id": a["task_id"], "action": a["action"]})
         doing = "Sending the reply now" if a["action"] == "send_reply" else "Adding it to Google Calendar now"
-        close_card(chat_id, message_id, f"Approved. {doing}; you will get a message here when it is done.",
-                   card_text, "✅ APPROVED")
+        close_card(chat_id, message_id, f"Approved{where}. {doing}; you will get a message here when it is done.",
+                   card_text, f"✅ APPROVED{where.upper()}")
         return "Approved."
     if kind == "r":
         store.mark_approval(approval_id, decision="rejected", decided_at=now)
@@ -312,8 +320,8 @@ def _handle_press(data: str, out: dict, chat_id: str = "", message_id=None, card
             store.upsert_task(a["task_id"], status="cancelled")   # the web app shows it as Rejected
         store.log("nyp_check_approvals", f"rejected {approval_id}", f"task {a['task_id']} {a['action']}")
         out["rejected"].append({"approval_id": approval_id, "task_id": a["task_id"], "action": a["action"]})
-        close_card(chat_id, message_id, "Rejected. Nothing was sent or added.", card_text,
-                   "❌ REJECTED. Nothing was sent or added to your calendar.")
+        close_card(chat_id, message_id, f"Rejected{where}. Nothing was sent or added.", card_text,
+                   f"❌ REJECTED{where.upper()}. Nothing was sent or added to your calendar.")
         return "Rejected. Nothing will be sent."
     if kind == "t":
         tone = parts[1]
@@ -326,6 +334,76 @@ def _handle_press(data: str, out: dict, chat_id: str = "", message_id=None, card
         return f"OK, rewriting: {TONES[tone]}."
     out["ignored"] += 1
     return "Unknown button."
+
+
+WEB_PRESS = {"approve": ("a", "approved"), "reject": ("r", "rejected")}
+
+
+def _apply_web_decisions(out: dict, chat_id: str) -> None:
+    """Apply the owner's Send / Don't send / Edit from the web dashboard. The dashboard server only
+    queues them (after checking the owner's sign-in); they go through the same checks as a Telegram
+    press, so a used or already-decided approval is refused here too."""
+    for wd in store.list_queued_web_decisions():
+        try:
+            ok, text = _web_decision(out, chat_id, wd)
+        except Exception as e:               # one bad row must not block the others
+            ok, text = False, f"error: {e}"[:200]
+        store.finish_web_decision(wd["id"], ok, text)
+        store.log("nyp_check_approvals", f"web {wd['decision']} {wd['approval_id']}", "applied" if ok else text)
+
+
+def _web_decision(out: dict, chat_id: str, wd: dict):
+    a = store.get_approval(wd["approval_id"])
+    if a is None:
+        return False, "unknown approval"
+    expired = a["decision"] == "expired" or (a["decision"] == "pending" and _is_expired(a))
+    if a["decision"] != "pending" and not expired:
+        return False, f"this request is already {a['decision']}"
+    draft = store.get_draft_by_hash(a["task_id"], a["content_hash"])
+    if draft is None or draft["payload"] is None:
+        return False, "the draft is no longer available"
+    if wd["decision"] == "edit":
+        result = _web_edit(a, draft, wd["body"] or "")
+        return result["ok"], (f"new approval {result['approval_id']}" if result["ok"] else result["error"])
+    if expired:
+        if a["decision"] == "pending":       # not yet swept: mark it and close its card first
+            store.mark_approval(a["approval_id"], decision="expired", decided_at=store.now_iso())
+            close_card(chat_id, a.get("telegram_message_id"), "Expired after 30 minutes. Nothing was sent or added.")
+        if wd["decision"] == "reject":
+            return _reject_expired(out, a, draft)
+        # The owner approves the exact same content now: a fresh approval for the same hash.
+        renewed = _send_for_approval(store.get_task(a["task_id"]), a["action"], draft)
+        if not renewed["ok"]:
+            return False, renewed["error"]
+        a = store.get_approval(renewed["approval_id"])
+    kind, wanted = WEB_PRESS[wd["decision"]]
+    text = _handle_press(f"{kind}:{a['approval_id']}", out, chat_id, a.get("telegram_message_id"), via="web")
+    return (store.get_approval(a["approval_id"]) or {}).get("decision") == wanted, text
+
+
+def _reject_expired(out: dict, a: dict, draft: dict):
+    """Don't send, for a draft whose approval already expired: drop the text and close the task."""
+    store.delete_draft_text(draft["draft_id"])
+    store.mark_approval(a["approval_id"], decision="rejected", decided_at=store.now_iso())
+    task = store.get_task(a["task_id"])
+    waiting = [x for x in store.list_approvals("pending") if x["task_id"] == a["task_id"]]
+    if task and task["status"] in ("pending_approval", "open") and not waiting:
+        store.upsert_task(a["task_id"], status="cancelled")
+    store.log("nyp_check_approvals", f"rejected {a['approval_id']}", f"task {a['task_id']} {a['action']} (web)")
+    out["rejected"].append({"approval_id": a["approval_id"], "task_id": a["task_id"], "action": a["action"]})
+    return True, "Rejected. Nothing will be sent."
+
+
+def _web_edit(a: dict, old: dict, new_body: str) -> dict:
+    """Replace a reply with the owner's edited text: a new draft (new hash) and a new approval.
+    A still-pending old approval is cancelled and its card closed by _send_for_approval."""
+    if a["action"] != "send_reply":
+        return {"ok": False, "error": "only a reply can be edited"}
+    if not new_body.strip():
+        return {"ok": False, "error": "the edited reply is empty"}
+    draft = store.create_draft(a["task_id"], "send_reply", {**old["payload"], "body": new_body.strip()})
+    store.delete_draft_text(old["draft_id"])
+    return _send_for_approval(store.get_task(a["task_id"]), "send_reply", draft)
 
 
 def revise_draft(approval_id: str, new_body: str) -> dict:
@@ -366,7 +444,7 @@ def nyp_request_approval(task_id: int, action: str) -> dict:
 @tool(permission=ToolPermission.READ_WRITE, expected_credentials=CREDENTIALS)
 def nyp_check_approvals() -> dict:
     """
-    Read the user's Telegram button presses and update approvals. Only the configured chat can approve.
+    Read the user's Telegram button presses and the owner's Send / Don't send / Edit from the web dashboard, and update approvals. Only the configured chat or the signed-in owner can approve.
 
     Returns:
         dict: {ok, approved: [{approval_id, task_id, action}], rejected, tone_requests: [{approval_id, tone, current_body}], expired, ignored}.

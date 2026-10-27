@@ -33,7 +33,7 @@ export const ACTION_LABEL = {
 };
 
 export const DECISION = {
-  pending: { label: "Waiting on Telegram", color: "warning" },
+  pending: { label: "Waiting for approval", color: "warning" },
   approved: { label: "Approved", color: "success" },
   rejected: { label: "Rejected", color: "error" },
   cancelled: { label: "Cancelled", color: "default" },
@@ -63,7 +63,7 @@ function statusFor(analysis, task, approvals) {
 
 const NEXT = {
   quarantined: "Quarantined by the safety checks. No reply was drafted and no task was created.",
-  awaiting_approval: "Approve or reject on Telegram (@nypfrontendbot). Nothing is sent until you approve.",
+  awaiting_approval: "Review the draft below. Approve or reject it on Telegram (@nypfrontendbot), or here when signed in as the owner. Nothing is sent until then.",
   needs_input: "Confidence is low, so the agent did not act. Answer its question in the assistant.",
   on_hold: "Held for human review.",
   task_open: "Task created. No action is waiting for approval.",

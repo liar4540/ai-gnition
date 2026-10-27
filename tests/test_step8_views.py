@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest import mock
 
@@ -133,11 +134,31 @@ class ViewsTest(TempDBTestCase):
         self.assertEqual(codes["LOOKALIKE_DOMAIN"]["label"], "Sender domain imitates a known domain")
         meet = next(t for t in data["tasks"] if t["thread_id"] == "t-meet")
         self.assertEqual(meet["delta"], "Moved from Tuesday to Friday")
-        self.assertNotIn("content", json.dumps(data["approvals"]))   # no draft text
+        self.assertNotIn("Thank you, I will attend", json.dumps(data["approvals"]))   # no draft text
+        self.assertTrue(all("content_hash" in a for a in data["approvals"]))
+        # Undecided drafts are shown in the dashboard's draft panel, and only there.
+        reply = next(d for d in data["drafts"] if d["action"] == "send_reply")
+        self.assertEqual(reply["payload"]["body"], "Thank you, I will attend.")
+        without_drafts = json.dumps({k: v for k, v in data.items() if k != "drafts"})
+        self.assertNotIn("Thank you, I will attend", without_drafts)
         dumped = json.dumps(data)
         for text in ("Verify your account immediately", "bank details have changed", "paypa1",
-                     "Thank you, I will attend", "Ignore previous instructions"):
+                     "Ignore previous instructions"):                 # email text never leaves Gmail
             self.assertNotIn(text, dumped)
+
+    def test_decided_drafts_are_not_exported(self):
+        task_id = next(d for d in views.export_drafts() if d["action"] == "send_reply")["task_id"]
+        for d in store.list_drafts(task_id):
+            store.delete_draft_text(d["draft_id"])
+        self.assertFalse([d for d in views.export_drafts() if d["task_id"] == task_id])
+
+    def test_rules_json_for_the_dashboard_server_matches_the_safety_rules(self):
+        import json
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "frontend", "server", "rules.json")
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), views.evidence_rules(),
+                             "Run: venv\\Scripts\\python scripts\\export_rules.py")
 
     def test_views_file_has_no_write_calls(self):
         with open(views.__file__, encoding="utf-8") as f:

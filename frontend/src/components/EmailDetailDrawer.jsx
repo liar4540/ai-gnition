@@ -6,6 +6,7 @@ import { useAgentData, useMessageMeta } from "../api/AgentData.jsx";
 import { ACTION_LABEL, parseSender } from "../lib/derive.js";
 import { formatDateTime, formatDeadline } from "../lib/format.js";
 import { CategoryChip, ConfidenceMeter, DecisionChip, EvidenceBadge, RiskChip, StatusChip } from "./Badges.jsx";
+import DraftPanel from "./DraftPanel.jsx";
 
 const NEXT_SEVERITY = {
   quarantined: "error", awaiting_approval: "warning", needs_input: "warning", on_hold: "warning",
@@ -115,6 +116,7 @@ export default function EmailDetailDrawer() {
                   </Alert>
                 )}
               </Section>
+              <Box sx={{ pb: 2 }}><DraftPanel taskId={email.task.task_id} /></Box>
             </>
           )}
 
@@ -133,7 +135,7 @@ export default function EmailDetailDrawer() {
                   ))}
                 </Stack>
                 <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 1 }}>
-                  Approvals happen only on Telegram. Each one works once and expires after 30 minutes.
+                  Approve on Telegram, or here when signed in as the owner. Each approval works once and expires after 30 minutes.
                 </Typography>
               </Section>
             </>

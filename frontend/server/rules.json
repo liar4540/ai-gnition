@@ -1,0 +1,42 @@
+{
+  "AUTH_FAIL": {
+    "label": "SPF, DKIM or DMARC check failed",
+    "severity": "warning"
+  },
+  "BANK_DETAILS_CHANGED": {
+    "label": "Payment email with changed bank details",
+    "severity": "high"
+  },
+  "BULK_SENDER": {
+    "label": "Newsletter or marketing sender",
+    "severity": "info"
+  },
+  "CALENDAR_CLASH": {
+    "label": "Clashes with an existing calendar event",
+    "severity": "info"
+  },
+  "LINK_DOMAIN_MISMATCH": {
+    "label": "Links point to a different domain than the sender",
+    "severity": "warning"
+  },
+  "LOOKALIKE_DOMAIN": {
+    "label": "Sender domain imitates a known domain",
+    "severity": "high"
+  },
+  "PROMPT_INJECTION_TEXT": {
+    "label": "Contains instructions aimed at an AI",
+    "severity": "high"
+  },
+  "REPLY_TO_MISMATCH": {
+    "label": "Reply-To goes to a different domain",
+    "severity": "warning"
+  },
+  "SENDER_DOMAIN_KNOWN": {
+    "label": "Sender domain is a known contact",
+    "severity": "safe"
+  },
+  "URGENT_LANGUAGE": {
+    "label": "Uses urgent or pressure wording",
+    "severity": "warning"
+  }
+}

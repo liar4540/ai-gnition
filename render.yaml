@@ -1,0 +1,45 @@
+# Render blueprint for the Inbox Shield dashboard (website + API server, one service).
+# Render -> New -> Blueprint -> pick this repo. Secrets marked sync: false are typed into the
+# Render dashboard once and never stored in git. The agent itself runs on watsonx Orchestrate.
+services:
+  - type: web
+    name: inbox-shield
+    runtime: node
+    region: singapore          # next to Supabase (Singapore) and Orchestrate (Tokyo)
+    plan: starter              # always on: the server checks Telegram every 30 s; free plans sleep
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    startCommand: node server/index.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      # watsonx Orchestrate (the deployed nyp_inbox_agent)
+      - key: WXO_SERVER_URL
+        sync: false
+      - key: WXO_API_KEY
+        sync: false
+      - key: WXO_AGENT_ID
+        sync: false
+      # Supabase: the dashboard reads the store directly and queues the owner's decisions
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      # Owner sign-in for Send / Don't send on the dashboard
+      - key: OWNER_PIN
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      # Gmail read access, only for showing sender and subject (never stored)
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_READ_REFRESH_TOKEN
+        sync: false
+      # Optional: the "How to try this" box
+      - key: DEMO_GMAIL
+        sync: false
+      - key: DEMO_VIDEO_LINK
+        sync: false

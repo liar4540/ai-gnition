@@ -4,7 +4,7 @@ import { Box, Card, Chip, Stack, Tab, Table, TableBody, TableCell, TableContaine
 import { useTheme } from "@mui/material/styles";
 import { useAgentData } from "../api/AgentData.jsx";
 import { ConfidenceMeter, DecisionChip } from "../components/Badges.jsx";
-import { useEmailParam } from "../components/EmailDetailDrawer.jsx";
+import { useTaskParam } from "../components/TaskDetailDrawer.jsx";
 import { EmptyState, ErrorBanner, LoadingRows } from "../components/States.jsx";
 import { ACTION_LABEL, wasRejected } from "../lib/derive.js";
 import { formatDeadline } from "../lib/format.js";
@@ -23,7 +23,7 @@ export default function Tasks() {
   const theme = useTheme();
   const wide = useMediaQuery(theme.breakpoints.up("md"));
   const { state, loading } = useAgentData();
-  const { open } = useEmailParam();
+  const { open } = useTaskParam();
   const [tab, setTab] = useState("all");
 
   const rows = useMemo(() => {
@@ -41,8 +41,6 @@ export default function Tasks() {
       .filter((t) => tab === "all" || t.status === tab)
       .reverse();
   }, [state, tab]);
-
-  const firstMessage = (t) => (t.source_message_ids || "").split(",").filter(Boolean).pop();
 
   return (
     <Box>
@@ -67,8 +65,8 @@ export default function Tasks() {
               <TableBody>
                 {rows.map((t) => (
                   <TableRow key={t.task_id} hover tabIndex={0} sx={{ cursor: "pointer" }}
-                            onClick={() => firstMessage(t) && open(firstMessage(t))}
-                            onKeyDown={(e) => { if (e.key === "Enter" && firstMessage(t)) open(firstMessage(t)); }}>
+                            onClick={() => open(t.task_id)}
+                            onKeyDown={(e) => { if (e.key === "Enter") open(t.task_id); }}>
                     <TableCell sx={{ maxWidth: 280 }}>
                       <Typography variant="body2" fontWeight={600}>{t.title}</Typography>
                       {t.reason && <Typography variant="caption" color="text.secondary">{t.reason}</Typography>}
@@ -99,8 +97,8 @@ export default function Tasks() {
           <Stack divider={<Box sx={{ borderTop: 1, borderColor: "divider" }} />}>
             {rows.map((t) => (
               <Box key={t.task_id} sx={{ p: 2, cursor: "pointer" }} role="button" tabIndex={0}
-                   onClick={() => firstMessage(t) && open(firstMessage(t))}
-                   onKeyDown={(e) => { if (e.key === "Enter" && firstMessage(t)) open(firstMessage(t)); }}>
+                   onClick={() => open(t.task_id)}
+                   onKeyDown={(e) => { if (e.key === "Enter") open(t.task_id); }}>
                 <Typography variant="body1" fontWeight={600}>{t.title}</Typography>
                 <Stack direction="row" spacing={1} useFlexGap sx={{ mt: 1, flexWrap: "wrap", alignItems: "center" }}>
                   <Chip size="small" variant="outlined" label={TASK_STATUS[t.status]?.label || t.status}

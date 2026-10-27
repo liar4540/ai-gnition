@@ -9,7 +9,8 @@
     "api": "node --env-file-if-exists=../.env --env-file-if-exists=server/.env server/index.js",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "node --env-file-if-exists=../.env --env-file-if-exists=server/.env server/index.js"
+    "start": "node --env-file-if-exists=../.env --env-file-if-exists=server/.env server/index.js",
+    "test": "node --test server/index.test.js"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",
@@ -27,5 +28,8 @@
     "@vitejs/plugin-react": "6.1.2",
     "concurrently": "10.0.6",
     "vite": "8.3.5"
+  },
+  "engines": {
+    "node": ">=22.9"
   }
 }

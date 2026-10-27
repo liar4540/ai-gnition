@@ -11,8 +11,9 @@ style: react_intrinsic
 
 # Tool-call guard for nyp_execute (Step 9). It is enforced in code, not only in this prompt:
 #  - Only nyp_check_approvals can set an approval to "approved", and only for a Telegram
-#    button press from the configured chat id (nyp_telegram.allowed_chat_id). No tool lets
-#    the model approve anything itself.
+#    button press from the configured chat id (nyp_telegram.allowed_chat_id) or an owner
+#    decision queued by the dashboard server after the owner's PIN sign-in (web_decisions
+#    table; no tool can write it). No tool lets the model approve anything itself.
 #  - nyp_execute refuses unless that approval is approved, unused, unexpired (30 min), for
 #    the same action, and the SHA-256 of the stored content still matches. It marks the
 #    approval used before calling Google, so an id can never be reused.

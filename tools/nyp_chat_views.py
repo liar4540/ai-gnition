@@ -33,26 +33,49 @@ def _tick(code: str) -> str:
     return ("✅ " if RULES_BY_CODE.get(code, {}).get("adjust", 0) > 0 else "⚠️ ") + label(code)
 
 
+def counts() -> dict:
+    """Every number on the dashboard, counted in code from the store's rows (works on both backends)."""
+    analyses = [a for a in store.list_analyses() if a["category"]]
+    tasks_all, approvals = store.list_tasks(), store.list_approvals()
+
+    def n(rows, test):
+        return sum(1 for r in rows if test(r))
+
+    return {
+        "analysed": len(analyses),
+        "routine": n(analyses, lambda a: a["category"] == "routine"),
+        "important": n(analyses, lambda a: a["category"] == "important"),
+        "suspicious": n(analyses, lambda a: a["category"] == "suspicious"),
+        "quarantined": n(store.list_analyses(quarantined=True), lambda a: True),
+        "tasks_pending": n(tasks_all, lambda t: t["status"] in ("open", "pending_approval", "on_hold")),
+        "tasks_done": n(tasks_all, lambda t: t["status"] == "done"),
+        "approvals_total": len(approvals),
+        "approvals_pending": n(approvals, lambda a: a["decision"] == "pending"),
+        "approvals_approved": n(approvals, lambda a: a["decision"] == "approved"),
+        "approvals_rejected": n(approvals, lambda a: a["decision"] == "rejected"),
+        "approvals_cancelled": n(approvals, lambda a: a["decision"] in ("cancelled", "expired")),
+        "actions_without_approval": n(approvals, lambda a: a["state"] == "confirmed" and a["decision"] != "approved"),
+        "deadlines_detected": n(tasks_all, lambda t: t["deadline"] is not None),
+        "events_added": n(approvals, lambda a: a["action"] in ("calendar_create", "calendar_move")
+                          and a["state"] == "confirmed"),
+        "replies_sent": n(approvals, lambda a: a["action"] == "send_reply" and a["state"] == "confirmed"),
+        "followups_drafted": len(store.draft_task_ids("send_reply")),
+    }
+
+
 def dashboard() -> str:
-    c = store.count
-    analysed = c("analyses", "category IS NOT NULL")
-    by_cat = {cat: c("analyses", "category=?", (cat,)) for cat in ("routine", "important", "suspicious")}
-    pending = c("tasks", "status IN ('open','pending_approval','on_hold')")
-    done = c("tasks", "status='done'")
-    without_approval = c("approvals", "state='confirmed' AND decision!='approved'")
+    c = counts()
     return "\n".join([
         "### Inbox Summary",
         _table(["Emails analysed", "Routine", "Important", "Suspicious", "Pending tasks", "Completed tasks"],
-               [[analysed, by_cat["routine"], by_cat["important"], by_cat["suspicious"], pending, done]]),
+               [[c["analysed"], c["routine"], c["important"], c["suspicious"], c["tasks_pending"], c["tasks_done"]]]),
         "", "### Trust Metrics",
         _table(["Approvals needed", "Approved", "Rejected", "Cancelled", "Actions without approval"],
-               [[c("approvals"), c("approvals", "decision='approved'"), c("approvals", "decision='rejected'"),
-                 c("approvals", "decision IN ('cancelled','expired')"), without_approval]]),
+               [[c["approvals_total"], c["approvals_approved"], c["approvals_rejected"], c["approvals_cancelled"],
+                 c["actions_without_approval"]]]),
         "", "### Productivity",
         _table(["Deadlines detected", "Events added", "Tasks completed", "Follow-ups generated"],
-               [[c("tasks", "deadline IS NOT NULL"),
-                 c("approvals", "action IN ('calendar_create','calendar_move') AND state='confirmed'"),
-                 done, store.count_distinct("drafts", "task_id", "action='send_reply'")]]),
+               [[c["deadlines_detected"], c["events_added"], c["tasks_done"], c["followups_drafted"]]]),
     ])
 
 
@@ -130,10 +153,23 @@ def _severity(code: str) -> str:
     return {"high": "high", "medium": "warning"}.get(rule.get("risk"), "info")
 
 
+def evidence_rules() -> dict:
+    """code -> {label, severity}: what the web dashboard needs to show evidence badges.
+    The dashboard server keeps a copy in frontend/server/rules.json (a test checks it matches)."""
+    return {code: {"label": label(code), "severity": _severity(code)} for code in RULES_BY_CODE}
+
+
+def export_drafts() -> list:
+    """Drafts still waiting for a decision, with their exact content, for the dashboard's draft panel.
+    Deleted (decided) drafts have no text left and are not included."""
+    return [{"draft_id": d["draft_id"], "task_id": d["task_id"], "action": d["action"],
+             "content_hash": d["content_hash"], "payload": d["payload"]}
+            for d in store.list_live_drafts() if d["payload"] is not None]
+
+
 def export_state(limit: int = 200) -> dict:
     """Everything the web dashboard shows, as JSON. Same sources and counts as dashboard();
-    no email text, no draft content, no tokens."""
-    c = store.count
+    no email text and no tokens. Undecided drafts are included for the draft panel."""
     analyses = [
         {
             "message_id": a["message_id"], "thread_id": a["thread_id"], "category": a["category"],
@@ -146,46 +182,30 @@ def export_state(limit: int = 200) -> dict:
     task_fields = ("task_id", "thread_id", "source_message_ids", "title", "deadline", "status", "confidence",
                    "reason", "delta", "calendar_event_id", "created_at", "updated_at")
     tasks_out = [{k: t[k] for k in task_fields} for t in store.list_tasks()][-limit:]
-    approval_fields = ("approval_id", "task_id", "action", "decision", "state", "expires_at", "used",
-                       "decided_at", "result_id")
+    approval_fields = ("approval_id", "task_id", "action", "content_hash", "decision", "state", "expires_at",
+                       "used", "decided_at", "result_id")   # the hash links an approval to its draft, not text
     approvals_out = [{k: a[k] for k in approval_fields} for a in store.list_approvals()][-limit:]
-    counts = {
-        "analysed": len(analyses),
-        "routine": c("analyses", "category=?", ("routine",)),
-        "important": c("analyses", "category=?", ("important",)),
-        "suspicious": c("analyses", "category=?", ("suspicious",)),
-        "quarantined": c("analyses", "quarantined=1"),
-        "tasks_pending": c("tasks", "status IN ('open','pending_approval','on_hold')"),
-        "tasks_done": c("tasks", "status='done'"),
-        "approvals_total": c("approvals"),
-        "approvals_pending": c("approvals", "decision='pending'"),
-        "approvals_approved": c("approvals", "decision='approved'"),
-        "approvals_rejected": c("approvals", "decision='rejected'"),
-        "approvals_cancelled": c("approvals", "decision IN ('cancelled','expired')"),
-        "actions_without_approval": c("approvals", "state='confirmed' AND decision!='approved'"),
-        "deadlines_detected": c("tasks", "deadline IS NOT NULL"),
-        "events_added": c("approvals", "action IN ('calendar_create','calendar_move') AND state='confirmed'"),
-        "replies_sent": c("approvals", "action='send_reply' AND state='confirmed'"),
-        "followups_drafted": store.count_distinct("drafts", "task_id", "action='send_reply'"),
-    }
-    return {"generated_at": store.now_iso(), "counts": counts, "analyses": analyses, "tasks": tasks_out,
-            "approvals": approvals_out, "activity": store.list_activity(limit)}
+    c = counts()
+    c["analysed"] = len(analyses)
+    return {"generated_at": store.now_iso(), "backend": store.backend_name(), "counts": c, "analyses": analyses,
+            "tasks": tasks_out, "approvals": approvals_out, "drafts": export_drafts(),
+            "activity": store.list_activity(limit)}
 
 
-@tool(permission=ToolPermission.READ_ONLY)
+@tool(permission=ToolPermission.READ_ONLY, expected_credentials=store.DB_CREDENTIALS)
 def nyp_export_state(limit: int = 200) -> dict:
     """
-    Export the dashboard data as JSON for the web app: analyses, tasks, approvals, activity and counts. No email text.
+    Export the dashboard data as JSON for the web app: analyses, tasks, approvals, undecided drafts, activity and counts. No email text.
 
     Args:
         limit (int): Maximum rows per list, default 200.
     Returns:
-        dict: {generated_at, counts, analyses, tasks, approvals, activity}.
+        dict: {generated_at, backend, counts, analyses, tasks, approvals, drafts, activity}.
     """
     return export_state(limit)
 
 
-@tool(permission=ToolPermission.READ_ONLY)
+@tool(permission=ToolPermission.READ_ONLY, expected_credentials=store.DB_CREDENTIALS)
 def nyp_dashboard() -> str:
     """
     Show the trust dashboard: inbox summary, trust metrics and productivity, counted from the store.
@@ -196,7 +216,7 @@ def nyp_dashboard() -> str:
     return dashboard()
 
 
-@tool(permission=ToolPermission.READ_ONLY)
+@tool(permission=ToolPermission.READ_ONLY, expected_credentials=store.DB_CREDENTIALS)
 def nyp_explain(task_id: int) -> str:
     """
     Explain a task: why, what evidence, how confident, and what happens if the user approves.
@@ -209,7 +229,7 @@ def nyp_explain(task_id: int) -> str:
     return explain(task_id)
 
 
-@tool(permission=ToolPermission.READ_ONLY)
+@tool(permission=ToolPermission.READ_ONLY, expected_credentials=store.DB_CREDENTIALS)
 def nyp_suspicious_list() -> str:
     """
     List quarantined emails with the reasons they were flagged.
@@ -221,7 +241,8 @@ def nyp_suspicious_list() -> str:
 
 
 @tool(permission=ToolPermission.READ_ONLY,
-      expected_credentials=[ExpectedCredentials(app_id=GOOGLE_READ_APP_ID, type=ConnectionType.KEY_VALUE)])
+      expected_credentials=[ExpectedCredentials(app_id=GOOGLE_READ_APP_ID, type=ConnectionType.KEY_VALUE)]
+      + store.DB_CREDENTIALS)
 def nyp_inbox() -> str:
     """
     Show analysed emails with sender and subject fetched live from Gmail (nothing is saved).
@@ -232,7 +253,7 @@ def nyp_inbox() -> str:
     return inbox()
 
 
-@tool(permission=ToolPermission.READ_ONLY)
+@tool(permission=ToolPermission.READ_ONLY, expected_credentials=store.DB_CREDENTIALS)
 def nyp_tasks(status: Optional[str] = None) -> str:
     """
     List tasks, optionally only one status.
@@ -245,7 +266,7 @@ def nyp_tasks(status: Optional[str] = None) -> str:
     return tasks(status)
 
 
-@tool(permission=ToolPermission.READ_ONLY)
+@tool(permission=ToolPermission.READ_ONLY, expected_credentials=store.DB_CREDENTIALS)
 def nyp_activity(limit: int = 20) -> str:
     """
     Show the most recent activity log entries.

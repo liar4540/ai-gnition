@@ -13,6 +13,7 @@ import StatCard from "../components/StatCard.jsx";
 import HowToTry from "../components/HowToTry.jsx";
 import { DecisionChip, EvidenceBadge, RiskChip } from "../components/Badges.jsx";
 import { useEmailParam } from "../components/EmailDetailDrawer.jsx";
+import { useTaskParam } from "../components/TaskDetailDrawer.jsx";
 import { EmptyState, ErrorBanner, LoadingRows } from "../components/States.jsx";
 import { ACTION_LABEL, parseSender } from "../lib/derive.js";
 import { formatDateTime, timeAgo } from "../lib/format.js";
@@ -66,6 +67,7 @@ function CategoryBreakdown({ counts }) {
 export default function Dashboard() {
   const { state, emails, loading, sync } = useAgentData();
   const { open } = useEmailParam();
+  const { open: openTask } = useTaskParam();
   const threats = useMemo(() => emails.filter((e) => e.quarantined).slice(-5).reverse(), [emails]);
   const pending = useMemo(() => {
     if (!state) return [];
@@ -92,7 +94,6 @@ export default function Dashboard() {
     );
   }
   const c = state.counts;
-  const emailForTask = (taskId) => emails.find((e) => e.task?.task_id === taskId);
 
   return (
     <Box>
@@ -162,14 +163,12 @@ export default function Dashboard() {
               {pending.length ? (
                 <List disablePadding>
                   {pending.map((a) => {
-                    const email = emailForTask(a.task_id);
                     return (
-                      <ListItemButton key={a.approval_id} divider sx={{ px: 1 }} disabled={!email}
-                                      onClick={() => email && open(email.message_id)}>
+                      <ListItemButton key={a.approval_id} divider sx={{ px: 1 }} onClick={() => openTask(a.task_id)}>
                         <ListItemText primary={a.task?.title || `Task ${a.task_id}`}
                                       secondary={`${ACTION_LABEL[a.action] || a.action} · expires ${timeAgo(a.expires_at)}`}
                                       slotProps={{ primary: { fontWeight: 600 } }} />
-                        <Chip size="small" label="On Telegram" color="warning" variant="outlined" icon={<HourglassTopIcon />} />
+                        <Chip size="small" label="Review draft" color="warning" variant="outlined" icon={<HourglassTopIcon />} />
                       </ListItemButton>
                     );
                   })}

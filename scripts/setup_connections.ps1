@@ -25,7 +25,7 @@ if (-not (Test-Filled @("WXO_SERVER_URL", "WXO_API_KEY"))) {
 . (Join-Path $PSScriptRoot "_orch.ps1")
 Connect-Orch $vars["WXO_SERVER_URL"] $vars["WXO_API_KEY"]
 
-foreach ($app in @("nyp_google_read", "nyp_google_act", "nyp_telegram")) {
+foreach ($app in @("nyp_google_read", "nyp_google_act", "nyp_telegram", "nyp_db")) {
     Invoke-Orch connections import -f (Join-Path $Root "connections\$app.yaml")
 }
 
@@ -59,4 +59,16 @@ if (Test-Filled @("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")) {
     Write-Host "Telegram connection set (draft and live)."
 } else {
     Write-Host "Skipped Telegram: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not filled. Approvals will say 'telegram not configured'."
+}
+
+# Supabase database (create the tables first with supabase\schema.sql). Without it the tools use SQLite.
+if (Test-Filled @("SUPABASE_URL", "SUPABASE_SERVICE_KEY")) {
+    foreach ($e in $Envs) {
+        Invoke-Orch connections configure -a nyp_db --env $e --type team --kind key_value
+        Invoke-Orch connections set-credentials -a nyp_db --env $e `
+            -e "url=$($vars['SUPABASE_URL'])" -e "service_key=$($vars['SUPABASE_SERVICE_KEY'])"
+    }
+    Write-Host "Supabase connection nyp_db set (draft and live)."
+} else {
+    Write-Host "Skipped Supabase: SUPABASE_URL / SUPABASE_SERVICE_KEY not filled. The tools keep using SQLite."
 }

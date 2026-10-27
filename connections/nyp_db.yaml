@@ -1,0 +1,13 @@
+# Supabase database used by every tool that reads or writes the store.
+# Entries: url (https://<project>.supabase.co), service_key (the project's secret / service_role key).
+# Values are set with scripts/setup_connections.ps1, never stored here. Without them the tools use SQLite.
+spec_version: v1
+kind: connection
+app_id: nyp_db
+environments:
+  draft:
+    security_scheme: key_value_creds
+    type: team
+  live:
+    security_scheme: key_value_creds
+    type: team

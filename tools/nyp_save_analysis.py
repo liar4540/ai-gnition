@@ -205,7 +205,8 @@ def save_and_request(message_id: str, thread_id: str, category: str, task_title:
 
 @tool(permission=ToolPermission.READ_WRITE,
       expected_credentials=[ExpectedCredentials(app_id="nyp_telegram", type=ConnectionType.KEY_VALUE),
-                            ExpectedCredentials(app_id="nyp_google_read", type=ConnectionType.KEY_VALUE)])
+                            ExpectedCredentials(app_id="nyp_google_read", type=ConnectionType.KEY_VALUE)]
+      + store.DB_CREDENTIALS)
 def nyp_save_analysis(message_id: str, thread_id: str, category: Category, task_title: Optional[str],
                       deadline: Optional[str], action: PlannedAction, draft_reply: Optional[str],
                       delta: Optional[str], model_confidence: int, reason: str) -> dict:
@@ -310,7 +311,8 @@ def save_many(items: list) -> dict:
 
 @tool(permission=ToolPermission.READ_WRITE,
       expected_credentials=[ExpectedCredentials(app_id="nyp_telegram", type=ConnectionType.KEY_VALUE),
-                            ExpectedCredentials(app_id="nyp_google_read", type=ConnectionType.KEY_VALUE)])
+                            ExpectedCredentials(app_id="nyp_google_read", type=ConnectionType.KEY_VALUE)]
+      + store.DB_CREDENTIALS)
 def nyp_save_analyses(items: List[PlannedEmail]) -> dict:
     """
     Save your analysis of SEVERAL emails in one call: one item per email returned by the read tool. Code validates each item, checks calendar clashes, computes confidence and sends approvals to Telegram.

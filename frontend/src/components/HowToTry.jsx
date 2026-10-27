@@ -20,15 +20,15 @@ export default function HowToTry() {
         <Typography component="ol" variant="body2" sx={{ m: 0, pl: 3, "& li": { mb: 0.75 } }}>
           <li>Press <b>Scan inbox</b> (top bar). Use the <b>▾</b> arrow next to it to scan older emails, e.g. the last 2 weeks.</li>
           <li>Open <b>Threats</b> to see why emails were quarantined.</li>
-          <li>Open <b>Tasks</b> and click a task for the <b>“why”</b> card: evidence, confidence and what happens next.</li>
+          <li>Open <b>Tasks</b> and click a task: you see why, and the <b>exact draft</b> reply and calendar event waiting for a decision.</li>
           <li>
             Optional: send an email from your own address to{" "}
             <b>{config.demo_email || "the demo inbox"}</b>, then scan again.
           </li>
         </Typography>
         <Typography variant="body2" sx={{ mt: 1 }}>
-          Approvals go to the team’s Telegram by design, so sending a reply or adding a calendar event is never
-          automatic.
+          Sending a reply or adding a calendar event is never automatic: only the owner can approve, on Telegram or
+          here after <b>Owner sign in</b>.
           {config.video_link && (
             <> A demo video of the approval step is{" "}
               <Link href={config.video_link} target="_blank" rel="noopener">here</Link>.</>

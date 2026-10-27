@@ -143,7 +143,8 @@ def _tell(approval_id: str, text: str) -> None:
 @tool(permission=ToolPermission.READ_WRITE,
       expected_credentials=[ExpectedCredentials(app_id=APP_ID, type=ConnectionType.KEY_VALUE),
                             # Telegram is only used to post the "Done" confirmation under the card.
-                            ExpectedCredentials(app_id="nyp_telegram", type=ConnectionType.KEY_VALUE)])
+                            ExpectedCredentials(app_id="nyp_telegram", type=ConnectionType.KEY_VALUE)]
+      + store.DB_CREDENTIALS)
 def nyp_execute(approval_id: str, action: str) -> dict:
     """
     Carry out ONE action the user approved on Telegram. Only use an approval_id that nyp_check_approvals just reported as approved.

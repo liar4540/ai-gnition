@@ -28,7 +28,7 @@ fi
 orchestrate env add -n nyp_env -u "$WXO_SERVER_URL" 2>/dev/null || true
 orchestrate env activate nyp_env --api-key "$WXO_API_KEY"
 
-for app in nyp_google_read nyp_google_act nyp_telegram; do
+for app in nyp_google_read nyp_google_act nyp_telegram nyp_db; do
   orchestrate connections import -f "connections/$app.yaml"
 done
 
@@ -58,4 +58,16 @@ if filled TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID; then
   echo "Telegram connection set (draft and live)."
 else
   echo "Skipped Telegram: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not filled. Approvals will say 'telegram not configured'."
+fi
+
+# Supabase database (create the tables first with supabase/schema.sql). Without it the tools use SQLite.
+if filled SUPABASE_URL SUPABASE_SERVICE_KEY; then
+  for e in draft live; do
+    orchestrate connections configure -a nyp_db --env "$e" --type team --kind key_value
+    orchestrate connections set-credentials -a nyp_db --env "$e" \
+      -e "url=$SUPABASE_URL" -e "service_key=$SUPABASE_SERVICE_KEY"
+  done
+  echo "Supabase connection nyp_db set (draft and live)."
+else
+  echo "Skipped Supabase: SUPABASE_URL / SUPABASE_SERVICE_KEY not filled. The tools keep using SQLite."
 fi

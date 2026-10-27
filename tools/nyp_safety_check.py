@@ -200,7 +200,7 @@ def check(sender_address: str, reply_to_address: Optional[str], subject: str, bo
             "quarantine": risk == "high", "reasons": reasons}
 
 
-@tool(permission=ToolPermission.READ_WRITE)
+@tool(permission=ToolPermission.READ_WRITE, expected_credentials=store.DB_CREDENTIALS)
 def nyp_safety_check(message_id: str, sender_address: str, reply_to_address: str, subject: str, body: str,
                      link_domains: List[str], auth_results: str, known_contacts: List[str],
                      bulk_mail: bool = False) -> dict:

@@ -1,4 +1,4 @@
-// API server for the web dashboard. Runs on localhost only.
+// API server for the web dashboard. Runs on localhost by default; HOST=0.0.0.0 to host it.
 //
 // It holds the Orchestrate API key (from the project's root .env) and talks to the deployed
 // nyp_inbox_agent through the Orchestrate runtime API (/v1/orchestrate/runs). The browser
@@ -9,13 +9,29 @@
 //   GET  /api/runs/:id      status of a scan
 //   POST /api/chat          free chat with the agent { message, thread_id? }
 //   GET  /api/messages?ids  sender / subject / received date fetched live from Gmail (never stored)
+//   GET  /api/owner         is owner sign-in set up, and is this browser signed in
+//   POST /api/owner/login   { pin } -> signed, HttpOnly cookie (8 hours)
+//   POST /api/owner/logout
+//   POST /api/approvals/:id/decision  { decision: approve | reject | edit, body? }  owner only
+//
+// With SUPABASE_URL + SUPABASE_SERVICE_KEY set, /api/state reads the database directly (fast,
+// no agent run) and the owner can decide on the dashboard. The server only QUEUES a decision in
+// web_decisions; the agent's nyp_check_approvals applies it with the same checks as a Telegram
+// press, and only nyp_execute (with its own Google connection) sends or writes to Calendar.
 import express from "express";
-import { randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-const PORT = Number(process.env.API_PORT || 8787);
+const PORT = Number(process.env.PORT || process.env.API_PORT || 8787);
+const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
+const DB_URL = (process.env.SUPABASE_URL || "").replace(/\/+$/, "");
+const DB_KEY = process.env.SUPABASE_SERVICE_KEY || "";
+const OWNER_PIN = process.env.OWNER_PIN || "";
+const SESSION_SECRET = process.env.SESSION_SECRET || "";
+// evidence code -> { label, severity }; written by scripts/export_rules.py from the safety rules
+const RULES = JSON.parse(readFileSync(path.join(SERVER_DIR, "rules.json"), "utf-8"));
 const WXO_URL = (process.env.WXO_SERVER_URL || "").replace(/\/+$/, "");
 const WXO_KEY = process.env.WXO_API_KEY || "";
 const AGENT_ID = process.env.WXO_AGENT_ID || "";
@@ -30,6 +46,9 @@ export function configProblems(env = process.env) {
   if (!filled(env.WXO_AGENT_ID)) missing.push("WXO_AGENT_ID (frontend/server/.env, run scripts/get_web_config.ps1)");
   return missing;
 }
+export const dbConfigured = (env = process.env) => filled(env.SUPABASE_URL) && filled(env.SUPABASE_SERVICE_KEY);
+export const ownerEnabled = (env = process.env) =>
+  filled(env.OWNER_PIN) && String(env.OWNER_PIN).length >= 6 && filled(env.SESSION_SECRET) && String(env.SESSION_SECRET).length >= 16;
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -138,13 +157,106 @@ async function loadState() {
   return typeof out.content === "string" ? JSON.parse(out.content) : out.content;
 }
 
+// ---- Supabase (PostgREST over HTTPS), server side only ---------------------------------------
+async function db(method, pathAndQuery, body, prefer) {
+  const headers = { apikey: DB_KEY, "Content-Type": "application/json", Accept: "application/json" };
+  if (DB_KEY.startsWith("eyJ")) headers.Authorization = `Bearer ${DB_KEY}`; // legacy service_role JWT
+  if (prefer) headers.Prefer = prefer;
+  const res = await fetch(`${DB_URL}/rest/v1/${pathAndQuery}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  if (!res.ok) throw new HttpError(502, `Supabase answered ${res.status}: ${text.slice(0, 200)}`);
+  return text ? JSON.parse(text) : null;
+}
+
+const evidenceItems = (codes) =>
+  codes.map((code) => ({ code, label: RULES[code]?.label || code, severity: RULES[code]?.severity || "info" }));
+
+// The same JSON as the agent's nyp_export_state (tools/nyp_chat_views.py), read straight from
+// the database. Keep the two in step.
+export function buildState({ analyses, tasks, approvals, drafts, activity, webDecisions }, limit = 200) {
+  const parse = (s, fallback) => {
+    try {
+      return s ? JSON.parse(s) : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  const allAnalyses = analyses.map((a) => ({ ...a, evidence: parse(a.evidence, []) }));
+  const analysed = allAnalyses.filter((a) => a.category);
+  const n = (rows, test) => rows.filter(test).length;
+  const outAnalyses = analysed.slice(-limit).map((a) => ({
+    message_id: a.message_id, thread_id: a.thread_id, category: a.category, risk: a.risk,
+    confidence: a.confidence, band: a.band, quarantined: Boolean(a.quarantined), created_at: a.created_at,
+    evidence: evidenceItems(a.evidence),
+  }));
+  const counts = {
+    analysed: outAnalyses.length,
+    routine: n(analysed, (a) => a.category === "routine"),
+    important: n(analysed, (a) => a.category === "important"),
+    suspicious: n(analysed, (a) => a.category === "suspicious"),
+    quarantined: n(allAnalyses, (a) => a.quarantined),
+    tasks_pending: n(tasks, (t) => ["open", "pending_approval", "on_hold"].includes(t.status)),
+    tasks_done: n(tasks, (t) => t.status === "done"),
+    approvals_total: approvals.length,
+    approvals_pending: n(approvals, (a) => a.decision === "pending"),
+    approvals_approved: n(approvals, (a) => a.decision === "approved"),
+    approvals_rejected: n(approvals, (a) => a.decision === "rejected"),
+    approvals_cancelled: n(approvals, (a) => ["cancelled", "expired"].includes(a.decision)),
+    actions_without_approval: n(approvals, (a) => a.state === "confirmed" && a.decision !== "approved"),
+    deadlines_detected: n(tasks, (t) => t.deadline !== null && t.deadline !== undefined),
+    events_added: n(approvals, (a) => ["calendar_create", "calendar_move"].includes(a.action) && a.state === "confirmed"),
+    replies_sent: n(approvals, (a) => a.action === "send_reply" && a.state === "confirmed"),
+    followups_drafted: new Set(drafts.filter((d) => d.action === "send_reply").map((d) => d.task_id)).size,
+  };
+  const taskFields = ["task_id", "thread_id", "source_message_ids", "title", "deadline", "status", "confidence",
+    "reason", "delta", "calendar_event_id", "created_at", "updated_at"];
+  const approvalFields = ["approval_id", "task_id", "action", "content_hash", "decision", "state", "expires_at",
+    "used", "decided_at", "result_id"];
+  const pick = (row, fields) => Object.fromEntries(fields.map((f) => [f, row[f] ?? null]));
+  return {
+    generated_at: new Date().toISOString(),
+    backend: "supabase",
+    counts,
+    analyses: outAnalyses,
+    tasks: tasks.slice(-limit).map((t) => pick(t, taskFields)),
+    approvals: approvals.slice(-limit).map((a) => pick(a, approvalFields)),
+    drafts: drafts
+      .filter((d) => !d.deleted && d.content)
+      .map((d) => ({ draft_id: d.draft_id, task_id: d.task_id, action: d.action, content_hash: d.content_hash,
+                     payload: parse(d.content, null) }))
+      .filter((d) => d.payload),
+    activity: activity.slice(0, limit),
+    // the owner's dashboard decisions, without any edited text
+    web_decisions: (webDecisions || []).map((w) => pick(w, ["id", "approval_id", "decision", "status", "result",
+      "created_at", "applied_at"])),
+  };
+}
+
+async function loadStateFromDb() {
+  const [analyses, tasks, approvals, drafts, activity, webDecisions] = await Promise.all([
+    db("GET", "analyses?select=*&order=created_at.asc"),
+    db("GET", "tasks?select=*&order=task_id.asc"),
+    db("GET", "approvals?select=*&order=expires_at.asc"),
+    db("GET", "drafts?select=draft_id,task_id,action,content,content_hash,deleted&order=draft_id.asc"),
+    db("GET", "activity_log?select=*&order=id.desc&limit=200"),
+    db("GET", "web_decisions?select=id,approval_id,decision,status,result,created_at,applied_at&order=id.desc&limit=50"),
+  ]);
+  return buildState({ analyses, tasks, approvals, drafts, activity, webDecisions });
+}
+
 async function getState(force) {
-  if (!force && stateCache.data && Date.now() - stateCache.at < STATE_TTL_MS) return stateCache.data;
+  const ttl = dbConfigured() ? 3_000 : STATE_TTL_MS; // the database is cheap to read; the agent is not
+  if (!force && stateCache.data && Date.now() - stateCache.at < ttl) return stateCache.data;
   if (!stateInFlight) {
-    stateInFlight = loadState()
+    stateInFlight = (dbConfigured() ? loadStateFromDb() : loadState())
       .then((data) => {
         stateCache = { at: Date.now(), data };
-        approvalsPending = (data?.counts?.approvals_pending || 0) > 0;
+        approvalsPending = (data?.counts?.approvals_pending || 0) > 0 ||
+          (data?.web_decisions || []).some((w) => w.status === "queued");
         return data;
       })
       .finally(() => {
@@ -268,10 +380,21 @@ const SYNC_MS = 30_000;
 let approvalsPending = false;
 let syncInFlight = false;
 let lastSync = { at: null, text: "", error: null };
+let syncAgain = false;
 
-async function syncApprovals() {
-  if (syncInFlight || !approvalsPending || configProblems().length) return;
-  if ([...scans.values()].some((s) => s.status === "running")) return;
+// Run "check approvals" now (an owner decision is waiting), or right after the one in flight.
+function requestSync() {
+  approvalsPending = true;
+  if (syncInFlight) {
+    syncAgain = true;
+    return;
+  }
+  syncApprovals(true);
+}
+
+async function syncApprovals(force = false) {
+  if (syncInFlight || configProblems().length) return;
+  if (!force && (!approvalsPending || [...scans.values()].some((s) => s.status === "running"))) return;
   syncInFlight = true;
   try {
     const started = await startRun("check approvals");
@@ -283,8 +406,69 @@ async function syncApprovals() {
     lastSync = { at: new Date().toISOString(), text: "", error: e.message };
   } finally {
     syncInFlight = false;
+    if (syncAgain) {
+      syncAgain = false;
+      setTimeout(() => syncApprovals(true), 0);
+    }
   }
 }
+
+// ---- owner sign-in ---------------------------------------------------------------------------
+// One owner, one PIN (OWNER_PIN, 6+ characters). The session is a signed expiry time in an
+// HttpOnly, SameSite=Strict cookie, so other sites cannot use it and page scripts cannot read it.
+const OWNER_COOKIE = "nyp_owner";
+const SESSION_MS = 8 * 60 * 60_000;
+const LOGIN_WINDOW_MS = 15 * 60_000;
+const LOGIN_MAX_FAILS = 5;
+const loginFails = new Map(); // ip -> [timestamps]
+
+const sha256 = (s) => createHash("sha256").update(String(s)).digest();
+const sign = (value) => createHmac("sha256", SESSION_SECRET).update(value).digest("base64url");
+
+function safeEqual(a, b) {
+  const x = Buffer.from(String(a));
+  const y = Buffer.from(String(b));
+  return x.length === y.length && timingSafeEqual(x, y);
+}
+
+export function checkPin(pin, expected = OWNER_PIN) {
+  return timingSafeEqual(sha256(pin), sha256(expected)); // equal-length digests: no length leak
+}
+
+function readCookie(req, name) {
+  for (const part of String(req.headers.cookie || "").split(";")) {
+    const [k, ...v] = part.trim().split("=");
+    if (k === name) return decodeURIComponent(v.join("="));
+  }
+  return "";
+}
+
+function isOwner(req) {
+  if (!ownerEnabled()) return false;
+  const [expires, sig] = readCookie(req, OWNER_COOKIE).split(".");
+  return Boolean(expires && sig) && safeEqual(sig, sign(expires)) && Number(expires) > Date.now();
+}
+
+function setOwnerCookie(req, res, value, maxAgeSeconds) {
+  res.setHeader("Set-Cookie", `${OWNER_COOKIE}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeSeconds}` +
+    (req.secure ? "; Secure" : ""));
+}
+
+function tooManyFails(ip, now = Date.now()) {
+  const recent = (loginFails.get(ip) || []).filter((t) => now - t < LOGIN_WINDOW_MS);
+  loginFails.set(ip, recent);
+  return recent.length >= LOGIN_MAX_FAILS;
+}
+
+function requireOwner(req) {
+  if (!ownerEnabled()) throw new HttpError(503, "Owner sign-in is not set up on this server (OWNER_PIN, SESSION_SECRET).");
+  if (!isOwner(req)) throw new HttpError(401, "Sign in as the owner to send or reject from the dashboard.");
+  if (!dbConfigured()) throw new HttpError(503, "Deciding on the dashboard needs the Supabase database (SUPABASE_URL, SUPABASE_SERVICE_KEY).");
+}
+
+const APPROVAL_ID_RE = /^[a-f0-9]{12}$/;
+const DECISIONS = ["approve", "reject", "edit"];
+const MAX_REPLY_CHARS = 5000;
 
 // ---- Gmail metadata, live and in memory only ----------------------------------------------
 let gmail = { token: null, expires: 0 };
@@ -345,6 +529,7 @@ async function messageMeta(id) {
 
 // ---- HTTP -----------------------------------------------------------------------------------
 const app = express();
+app.set("trust proxy", 1); // hosts (Render) put one proxy in front: req.secure / req.ip are the visitor's
 app.use(express.json({ limit: "16kb" }));
 
 const handle = (fn) => async (req, res) => {
@@ -386,6 +571,59 @@ app.post("/api/scan", handle(async (req, res) => {
 }));
 
 app.get("/api/sync", (_req, res) => res.json({ ...lastSync, running: syncInFlight, watching: approvalsPending }));
+
+app.get("/api/owner", (req, res) => res.json({ enabled: ownerEnabled(), owner: isOwner(req), web_actions: dbConfigured() }));
+
+app.post("/api/owner/login", (req, res) => {
+  if (!ownerEnabled()) {
+    res.status(503).json({ error: "Owner sign-in is not set up on this server." });
+    return;
+  }
+  if (tooManyFails(req.ip)) {
+    res.status(429).json({ error: "Too many wrong PINs. Try again in 15 minutes." });
+    return;
+  }
+  if (!checkPin(String(req.body?.pin ?? ""))) {
+    loginFails.get(req.ip).push(Date.now());
+    res.status(401).json({ error: "Wrong PIN." });
+    return;
+  }
+  loginFails.delete(req.ip);
+  const expires = String(Date.now() + SESSION_MS);
+  setOwnerCookie(req, res, `${expires}.${sign(expires)}`, SESSION_MS / 1000);
+  res.json({ owner: true });
+});
+
+app.post("/api/owner/logout", (req, res) => {
+  setOwnerCookie(req, res, "", 0);
+  res.json({ owner: false });
+});
+
+app.post("/api/approvals/:id/decision", handle(async (req, res) => {
+  requireOwner(req);
+  const id = String(req.params.id);
+  const decision = String(req.body?.decision || "");
+  const body = decision === "edit" ? String(req.body?.body ?? "").trim() : null;
+  if (!APPROVAL_ID_RE.test(id)) throw new HttpError(400, "Invalid approval id.");
+  if (!DECISIONS.includes(decision)) throw new HttpError(400, "Decision must be approve, reject or edit.");
+  if (decision === "edit" && (!body || body.length > MAX_REPLY_CHARS)) {
+    throw new HttpError(400, `The edited reply must be 1 to ${MAX_REPLY_CHARS} characters.`);
+  }
+  const [approval] = await db("GET", `approvals?approval_id=eq.${id}&select=approval_id,action,decision`);
+  if (!approval) throw new HttpError(404, "Unknown approval.");
+  if (!["pending", "expired"].includes(approval.decision)) {
+    throw new HttpError(409, `This request is already ${approval.decision}.`);
+  }
+  if (decision === "edit" && approval.action !== "send_reply") throw new HttpError(400, "Only a reply can be edited.");
+  const queued = await db("GET", `web_decisions?approval_id=eq.${id}&status=eq.queued&select=id`);
+  if (queued.length) throw new HttpError(409, "This request is already being processed.");
+  // Only queued here; nyp_check_approvals applies it with every check, nyp_execute acts.
+  await db("POST", "web_decisions", { approval_id: id, decision, body, status: "queued",
+                                      created_at: new Date().toISOString() }, "return=minimal");
+  stateCache = { at: 0, data: null };
+  requestSync();
+  res.status(202).json({ queued: true, decision });
+}));
 
 app.get("/api/runs/:id", handle(async (req, res) => {
   const scan = scans.get(req.params.id);

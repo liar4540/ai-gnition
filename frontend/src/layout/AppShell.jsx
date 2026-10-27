@@ -19,6 +19,8 @@ import { useAgentData } from "../api/AgentData.jsx";
 import ScanButton from "../components/ScanButton.jsx";
 import AssistantDrawer from "../components/AssistantDrawer.jsx";
 import EmailDetailDrawer from "../components/EmailDetailDrawer.jsx";
+import TaskDetailDrawer from "../components/TaskDetailDrawer.jsx";
+import OwnerSignIn from "../components/OwnerSignIn.jsx";
 import ErrorBoundary from "../components/ErrorBoundary.jsx";
 import { SIDEBAR } from "../theme.js";
 import { timeAgo } from "../lib/format.js";
@@ -74,7 +76,7 @@ export default function AppShell({ children, mode, onToggleMode }) {
       </List>
       <Box sx={{ mt: "auto", p: 2 }}>
         <Typography variant="caption" sx={{ color: "#94A3B8" }}>
-          Approvals happen on Telegram. The dashboard never sends email.
+          Nothing is sent without approval: on Telegram, or here by the signed-in owner.
         </Typography>
       </Box>
     </Box>
@@ -124,6 +126,7 @@ export default function AppShell({ children, mode, onToggleMode }) {
             <Tooltip title={mode === "dark" ? "Light mode" : "Dark mode"}>
               <IconButton onClick={onToggleMode} aria-label="Toggle dark mode">{mode === "dark" ? <LightModeIcon /> : <DarkModeIcon />}</IconButton>
             </Tooltip>
+            <OwnerSignIn compact={!desktop} />
             {desktop ? (
               <Button variant="outlined" startIcon={<ForumIcon />} onClick={() => setChatOpen(true)}>Assistant</Button>
             ) : (
@@ -140,6 +143,7 @@ export default function AppShell({ children, mode, onToggleMode }) {
 
       <ErrorBoundary label="The assistant"><AssistantDrawer open={chatOpen} onClose={() => setChatOpen(false)} /></ErrorBoundary>
       <ErrorBoundary label="The email details"><EmailDetailDrawer /></ErrorBoundary>
+      <ErrorBoundary label="The task details"><TaskDetailDrawer /></ErrorBoundary>
 
       <Snackbar open={Boolean(notice)} autoHideDuration={notice?.severity === "info" ? 4000 : 8000} onClose={clearNotice}
                 anchorOrigin={{ vertical: "bottom", horizontal: "left" }}>
